@@ -1,0 +1,4 @@
+curl_cffi>=0.16,<0.17
+playwright>=1.51,<2
+Pillow>=10
+streamlit==1.66.1
