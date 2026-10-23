@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 from web_backend import (
-    ROOT, JobManager, format_duration, format_wait_range, live_configuration, normalize_profile,
+    ROOT, JobManager, collection_provider, format_duration, format_wait_range, live_configuration, normalize_profile,
     password_signature, read_config, result_cost,
 )
 
@@ -91,6 +91,10 @@ def show_access(config: dict) -> None:
 
 
 def show_home(config: dict) -> None:
+    try:
+        public_profile = collection_provider(config) == "apify"
+    except ValueError:
+        public_profile = False
     left, right = st.columns([1.55, 1], gap="large")
     with left:
         st.html('<div class="eyebrow">INSTAGRAM → INSIGHTS</div><div class="hero-title">За фотографіями —<br><span>ціла історія.</span></div><p class="hero-copy">Дізнайся, які інтереси й заняття простежуються у профілі. Фото та підписи перетворюються на один змістовний висновок.</p><div class="chips"><span class="chip">До 100 дописів</span><span class="chip">Фото + підписи + коментарі</span><span class="chip">Висновки з підставами</span></div>')
@@ -101,7 +105,7 @@ def show_home(config: dict) -> None:
     with main:
         with st.container(border=True, key="analysis_card"):
             st.subheader("Кого аналізуємо?")
-            st.caption("Встав посилання на профіль, доступний Instagram-акаунту власника демо.")
+            st.caption("Встав посилання на публічний профіль Instagram." if public_profile else "Встав посилання на профіль, доступний Instagram-акаунту власника демо.")
             show_access(config)
             with st.form("analysis_form", border=False):
                 profile = st.text_input("Посилання на Instagram", placeholder="https://www.instagram.com/username/", key="profile_input")
@@ -208,13 +212,18 @@ def show_result() -> None:
     coverage = payload.get("comment_coverage") or {}
     if not is_demo and coverage.get("posts_not_collected"):
         st.warning("Цей збережений звіт створено без збору коментарів. Щоб врахувати їх, запусти новий аналіз профілю.")
+    source_coverage = payload.get("collection_coverage") or {}
+    if source_coverage.get("discovery_complete") is False:
+        advertised = source_coverage.get("advertised_posts")
+        scope = f"із {advertised} заявлених у профілі" if advertised is not None else "із запитаної вибірки"
+        st.warning(f"Отримано {source_coverage.get('collected_posts', 0)} дописів {scope}. Висновок спирається на отримані матеріали; повноту збору не підтверджено.")
     comments_metric.metric("Коментарів проаналізовано", str(coverage["analyzed"]) if "analyzed" in coverage else "—",
         help="Кількість коментарів, переданих моделі. Повнота залежить від доступності, обмеження кількості та обсягу тексту.")
     execution = payload.get("web_execution") or {}
     b.metric("Повний час запуску", format_duration(execution.get("total_duration_seconds", payload.get("analysis_duration_seconds"))),
         help="Для нового вебзапуску: збір постів, завантаження, підготовка медіа та всі запити ШІ. При продовженні показує час поточного запуску.")
     cost = result_cost(payload)
-    c.metric("Оцінка вартості API", f"${cost:.5f}" if cost is not None else "—", help="Оцінка за токенами та збереженим тарифом. Не включає хостинг. У прикладі реальних запитів немає.")
+    c.metric("Оцінка вартості API", f"${cost:.5f}" if cost is not None else "—", help="Включає вартість збору даних, повідомлену провайдером, та оцінку моделі за токенами. Не включає хостинг. У прикладі реальних запитів немає.")
     st.space("small")
     summary, materials, details = st.tabs(["Висновки", "Матеріали", "Про аналіз"])
     with summary:
@@ -234,6 +243,10 @@ def show_result() -> None:
             else:
                 st.info("Окремих фото для перегляду немає. У матеріалах можуть бути лише відео.")
     with details:
+        source = payload.get("collection_usage") or {}
+        if source.get("provider") == "Apify":
+            source_cost = source.get("cost_usd")
+            st.caption(f"Збір даних Apify: ${source_cost:.5f}" if source_cost is not None else "Вартість збору Apify ще уточнюється.")
         st.markdown("**Що враховано**")
         st.write("Фото, вибрані кадри відео й підписи. Аналіз описує видимі заняття та повторювані теми. Він не встановлює приховані особисті обставини.")
         settings_data = payload.get("analysis_settings") or {}
@@ -292,7 +305,7 @@ def show_about(config: dict) -> None:
     st.html('<div class="eyebrow">БІЛЬШЕ КОНТЕКСТУ, МЕНШЕ ЗДОГАДОК</div>')
     st.title("Що бачить Instalyzer")
     st.write("Застосунок поєднує фото, підписи й доступні коментарі. Окремо розглядає професійний контент, можливі хобі, особисті епізоди й прямо названі автором сімейні зв’язки.")
-    for title, body in (("Збираємо до 100 дописів", "Instagram відкривається через налаштований сеанс власника демо. Зберігаються доступні фото й відео, дати, підписи й до 100 коментарів на допис із доступними попередніми відповідями."),
+    for title, body in (("Збираємо до 100 дописів", "Зберігаються доступні фото й відео, дати, підписи та коментарі. Повнота залежить від доступності профілю й обмежень джерела. Для публічних профілів можна використовувати Apify."),
         ("Порівнюємо матеріали", "Зображення готуються до аналізу. Для каруселі беруться до шести рівномірно вибраних елементів; для відео — один кадр. Така вибірка має обмеження."),
         ("Формуємо один звіт", "Окремі розділи про професійні теми, хобі, прямо описаний сімейний контекст, коментарі, інші деталі, межі висновків і підсумок. Окремі публікації у фінальному Markdown не перелічуються.")):
         with st.container(border=True):

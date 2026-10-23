@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parent
 RUNTIME = ROOT / ".runtime"
 REQUIRED = ("IG_USERNAME", "IG_SESSIONID", "IG_CSRFTOKEN", "IG_DS_USER_ID", "OPENCODE_API_KEY")
 CONFIG_KEYS = (*REQUIRED, "APP_PASSWORD", "APP_ENABLE_LIVE", "APP_MAX_RUNS_PER_DAY", "APP_LOW_CPU_MODE",
+    "INSTAGRAM_SCRAPER_PROVIDER", "APIFY_API_TOKEN", "APIFY_COMMENTS_MODE", "APIFY_MAX_TOTAL_CHARGE_USD",
     "IG_MID", "IG_IG_DID", "IG_RUR", "IG_DATR", "IG_DPR", "IG_IG_NRCB",
     "IG_PS_L", "IG_PS_N", "IG_RD_CHALLENGE", "IG_WD", "OPENCODE_MODEL",
     "OPENCODE_IMAGE_MAX_EDGE", "OPENCODE_MAX_MEDIA_PER_POST", "OPENCODE_POST_MAX_OUTPUT_TOKENS",
@@ -66,8 +67,22 @@ def read_config(secrets: Mapping | None = None) -> dict[str, str]:
     return values
 
 
+def collection_provider(config: Mapping[str, str]) -> str:
+    selected = str(config.get("INSTAGRAM_SCRAPER_PROVIDER", "auto")).strip().casefold()
+    if selected == "auto":
+        return "apify" if str(config.get("APIFY_API_TOKEN", "")).strip() else "instagram"
+    if selected not in {"apify", "instagram"}:
+        raise ValueError("INSTAGRAM_SCRAPER_PROVIDER: auto, apify or instagram")
+    return selected
+
+
 def live_configuration(config: Mapping[str, str]) -> tuple[bool, list[str]]:
-    missing = [key for key in REQUIRED if not str(config.get(key, "")).strip()]
+    try:
+        provider = collection_provider(config)
+    except ValueError:
+        return False, ["INSTAGRAM_SCRAPER_PROVIDER (auto / apify / instagram)"]
+    required = ("APIFY_API_TOKEN", "OPENCODE_API_KEY") if provider == "apify" else REQUIRED
+    missing = [key for key in required if not str(config.get(key, "")).strip()]
     if len(config.get("APP_PASSWORD", "")) < 12:
         missing.append("APP_PASSWORD (мінімум 12 символів)")
     enabled = str(config.get("APP_ENABLE_LIVE", "true")).lower() in {"true", "1", "yes"}
@@ -123,7 +138,13 @@ def result_cost(payload: dict) -> float | None:
     # model_usage already includes summary_usage in current analyzer reports.
     usage = payload.get("model_usage") or {}
     value = usage.get("cost_usd")
-    return float(value) if value is not None and usage.get("cost_is_complete", True) else None
+    if value is None or not usage.get("cost_is_complete", True):
+        return None
+    collection = payload.get("collection_usage") or {}
+    source_cost = collection.get("cost_usd", 0)
+    if source_cost is None or not collection.get("cost_is_complete", True):
+        return None
+    return float(value) + float(source_cost)
 
 
 @dataclass
@@ -225,8 +246,11 @@ class JobManager:
                 "done": job.done, "total": job.total, "error": job.error,
                 "elapsed": end - job.started if job.started is not None else 0, "created": job.created,
                 "queue_elapsed": max(0, now - (job.queued_at if job.queued_at is not None else job.created)) if job.state == "queued" else 0,
-                "can_resume": job.state == "failed" and job.export_dir is not None,
+                "can_resume": job.state == "failed" and self._has_checkpoint(job),
                 **self._queue_snapshot(job, now)}
+
+    def _has_checkpoint(self, job: Job) -> bool:
+        return job.export_dir is not None or any((self.runtime / job.id / "exports").glob("*/.apify/runs.json"))
 
     def _duration_range(self, job: Job) -> tuple[float, float, int]:
         samples = [j for j in self.jobs.values() if j.state == "complete" and not j.resumed
@@ -293,7 +317,7 @@ class JobManager:
             raise ValueError("Спочатку відкрий доступ до запусків.")
         with self.lock:
             job = self._owned(owner, job_id)
-            if job.state != "failed" or job.export_dir is None:
+            if job.state != "failed" or not self._has_checkpoint(job):
                 raise ValueError("Цей аналіз не можна продовжити.")
             if any(j.state not in TERMINAL for j in self.jobs.values()):
                 raise ValueError("Дочекайся завершення активного аналізу.")
@@ -374,6 +398,13 @@ class JobManager:
         process.wait(timeout=10)
 
     def _process(self, job: Job, script: str, arguments: list[str], env: dict, config: Mapping[str, str]) -> None:
+        def abort_remote():
+            if script == "scrape_instagram_apify.py":
+                from scrape_instagram_apify import abort_export_runs
+                try:
+                    abort_export_runs(env["IG_OUTPUT_DIR"], env.get("APIFY_API_TOKEN", ""))
+                except (RuntimeError, OSError, ValueError):
+                    pass  # The provider's spending and time caps still apply.
         options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
         with subprocess.Popen([sys.executable, "-u", str(ROOT / script), *arguments], cwd=ROOT,
             env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -387,9 +418,11 @@ class JobManager:
             reader.start()
             while process.poll() is None or reader.is_alive() or not lines.empty():
                 if job.cancel.is_set():
+                    abort_remote()
                     self._terminate(process)
                     raise InterruptedError("Аналіз зупинено.")
                 if time.time() - (job.started or time.time()) > JOB_TIMEOUT_SECONDS:
+                    abort_remote()
                     self._terminate(process)
                     raise TimeoutError("Час очікування перевищено. Спробуй ще раз пізніше.")
                 try:
@@ -398,6 +431,8 @@ class JobManager:
                     pass
             if process.returncode != 0:
                 messages = "\n".join(job.logs).lower()
+                if script == "scrape_instagram_apify.py":
+                    raise RuntimeError("Apify не завершив збір. Перевір токен, баланс і доступність публічного профілю; збережений запуск можна продовжити.")
                 if any(word in messages for word in ("cookie", "logged out", "session", "checkpoint_required", "challenge_required")):
                     raise RuntimeError("Instagram не прийняв сеанс. Власнику демо потрібно оновити cookies у Secrets.")
                 if "429" in messages:
@@ -411,7 +446,7 @@ class JobManager:
             if job.state == "cancelled":
                 return
             self._update(job, state="running", started=time.time(), stage="scraping",
-                         resumed=job.export_dir is not None)
+                         resumed=job.resumed or self._has_checkpoint(job))
         try:
             if job.cancel.is_set():
                 raise InterruptedError("Аналіз зупинено.")
@@ -434,14 +469,21 @@ class JobManager:
                 except ValueError:
                     env[key] = str(minimum)
             scrape_started = time.monotonic()
-            resumed = job.export_dir is not None
+            resumed = job.resumed
+            collection_ran = job.export_dir is None
+            provider = collection_provider(config)
             if job.export_dir is None:
-                self._process(job, "scrape_instagram.py", [f"https://www.instagram.com/{job.username}/"], env, config)
+                script = "scrape_instagram_apify.py" if provider == "apify" else "scrape_instagram.py"
+                arguments = [f"https://www.instagram.com/{job.username}/"]
+                if provider == "apify":
+                    arguments.extend(["--limit", str(MAX_POSTS), "--comments-mode", config.get("APIFY_COMMENTS_MODE", "preview")])
+                self._process(job, script, arguments, env, config)
                 manifests = sorted((work_dir / "exports").glob("*/posts.json"))
                 if not manifests:
                     raise RuntimeError("Instagram не повернув матеріалів для цього профілю.")
                 job.export_dir = manifests[-1].parent
             payload = json.loads((job.export_dir / "posts.json").read_text(encoding="utf-8"))
+            source_provider = "apify" if str(payload.get("provider", "")).casefold() == "apify" else "instagram"
             posts = payload.get("posts", [])[:MAX_POSTS]
             if not posts or not all(isinstance(p, dict) for p in posts):
                 raise RuntimeError("У профілі немає доступних публікацій.")
@@ -450,24 +492,29 @@ class JobManager:
             missing_comments = any(comments_need_collection(p) for p in posts)
             if missing_comments:
                 self._update(job, stage="comments", done=0, total=len(posts))
-                self._process(job, "scrape_instagram.py", ["--collect-comments", str(job.export_dir)], env, config)
+                script = "scrape_instagram_apify.py" if source_provider == "apify" else "scrape_instagram.py"
+                self._process(job, script, ["--collect-comments", str(job.export_dir)], env, config)
                 payload = json.loads((job.export_dir / "posts.json").read_text(encoding="utf-8"))
                 posts = payload.get("posts", [])[:MAX_POSTS]
                 if not posts or any(not isinstance(p, dict) or comments_need_collection(p) for p in posts):
                     raise RuntimeError("Не вдалося перевірити збір коментарів. Продовж запуск або створи новий аналіз.")
-            scrape_seconds = time.monotonic() - scrape_started if not resumed or missing_comments else 0.0
+            scrape_seconds = time.monotonic() - scrape_started if collection_ran or missing_comments else 0.0
             if not any(m.get("file") for p in posts for m in p.get("media_files", [])):
                 raise RuntimeError("Не вдалося завантажити медіа для аналізу.")
             self._update(job, stage="analysis", done=0, total=len(posts))
             self._process(job, "analyze_instagram_profile.py", [str(job.export_dir), "--allow-contributor-training"], env, config)
             report_path = job.export_dir / "profile_analysis.json"
             report = json.loads(report_path.read_text(encoding="utf-8"))
+            report["collection_usage"] = payload.get("provider_usage") or {}
+            report["collection_coverage"] = payload.get("coverage") or {}
+            report["collection_warnings"] = payload.get("warnings") or []
             report["web_execution"] = {
                 "total_duration_seconds": round(time.time() - job.started, 3),
                 "scrape_duration_seconds": round(scrape_seconds, 3),
                 "analysis_includes_media_preparation": True,
                 "resumed": resumed,
                 "low_cpu_mode": low_cpu_mode,
+                "scraper_provider": source_provider,
             }
             temporary = report_path.with_suffix(".tmp")
             temporary.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -104,6 +104,33 @@ To reuse an earlier probe, add `--seed-response '.runtime\scrapedo-probes\<probe
 
 Live result on 2026-10-24: the tested profile advertised 65 posts, but this public route exposed 12. Cursor navigation repeated the first batch; bulk queries returned no timeline, including a 12-item control. Eleven exploratory provider requests consumed **5 credits** in total, confirmed against the final subscription balance (993). The export contains 19 verified image files (741,003 bytes), including six video covers. One post has a verified timestamp and a verified zero-comment count; no comment text or full video streams were obtained. A full 100-post scrape through this route remains unavailable. Replaying the saved collection made zero new provider requests.
 
+## Apify collection in CLI and Streamlit
+
+The official [`apify/instagram-scraper`](https://apify.com/apify/instagram-scraper) (`shu8hvrXbJbY3Eb9W`) is supported as a complete pipeline provider. Put `APIFY_API_TOKEN` in your local `.env`. With `INSTAGRAM_SCRAPER_PROVIDER=auto` (the default), a configured Apify token selects this provider. Set the provider explicitly to `apify` to require it, or `instagram` to select the session-based scraper. Apify requires no Instagram session cookies. The model key and web access password are still required for web analyses.
+
+```powershell
+python .\scrape_instagram_apify.py 'https://www.instagram.com/bohdankryuk/' --limit 100
+```
+
+The CLI writes a compatible `posts.json`, all available carousel media, video files, dates, comments and profile biography to `exports/instagram-<username>-apify/`. Use `--output <folder>` to choose a destination. A repeat run in the same folder reuses the saved Actor IDs, datasets and media. Choose a new output folder for a fresh snapshot. `--no-download` saves only metadata. Limits apply to the newest returned posts, with source timestamps used for ordering; Actor success does not guarantee the advertised full profile is available. The manifest records this distinction.
+
+`APIFY_COMMENTS_MODE=preview` is the economical default: analyze the `latestComments` included in the posts response. Set it to `full` (or pass `--comments-mode full`) for one additional Actor run covering incomplete threads, requesting up to 100 comments per post. Actual provider/plan restrictions still apply; the Actor currently documents a Free-plan cap of about 15 comments per post. Owner statements, reply context, dates and missing coverage remain explicit. A full-mode run can return the same already-collected comments and still cost money.
+
+The total Actor-run budget is `APIFY_MAX_TOTAL_CHARGE_USD=0.5` by default (`--max-cost-usd` overrides it). Each new run receives the remaining budget through Apify's `maxTotalChargeUsd`. Charge counters can lag behind `SUCCEEDED`; the integration waits for the result charges before releasing the remaining budget. Unknown charges block further paid runs. A lost start response is never retried automatically. A failed status poll can resume the same saved run. Web cancellation sends an abort request to the saved remote run. Optional profile/comment failures are recorded as warnings while retaining the available posts.
+
+For Streamlit Cloud, add these fields to Secrets:
+
+```toml
+INSTAGRAM_SCRAPER_PROVIDER = "apify"
+APIFY_API_TOKEN = "your-token"
+APIFY_MAX_TOTAL_CHARGE_USD = "0.5"
+APIFY_COMMENTS_MODE = "preview"
+```
+
+The existing queue, media settings, analyzer and final Markdown format are reused. Web reports retain collection coverage and add the reported Apify run cost to the model cost once. An unknown collection cost is shown as unavailable.
+
+The [integration notes](APIFY_INTEGRATION.md) record the live result, costs, limitations and cache verification.
+
 ## AI analysis of an export
 
 Set `OPENCODE_API_KEY` in the local `.env` to a **freshly rotated** OpenCode Go key. The analyzer uses `muse-spark-1.3-contributor` through OpenCode Go's Responses API. It analyzes at most 100 posts, sending each post's caption, photos, available comments, and one extracted frame per video to OpenCode/Meta. It writes `profile_analysis.md` with only consolidated conclusions (profile portrait, professional content, possible hobbies, explicitly described family context, comment evidence, other details, limits, and summary), while `profile_analysis.json` retains the individual post analyses. The summary can include more detail when the evidence supports it, but does not enumerate posts or show their IDs.
