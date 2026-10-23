@@ -190,6 +190,8 @@ def show_result() -> None:
     a, comments_metric, b, c = st.columns(4)
     a.metric("Дописів у вибірці", str(payload.get("post_count", 0)))
     coverage = payload.get("comment_coverage") or {}
+    if not is_demo and coverage.get("posts_not_collected"):
+        st.warning("Цей збережений звіт створено без збору коментарів. Щоб врахувати їх, запусти новий аналіз профілю.")
     comments_metric.metric("Коментарів проаналізовано", str(coverage["analyzed"]) if "analyzed" in coverage else "—",
         help="Кількість коментарів, переданих моделі. Повнота залежить від доступності, обмеження кількості та обсягу тексту.")
     execution = payload.get("web_execution") or {}

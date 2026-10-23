@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 
 import analyze_instagram_profile as analyzer
 import scrape_instagram as scraper
-from analysis_prompts import MAX_POSTS, build_synthesis_prompt, prepare_comments
+from analysis_prompts import MAX_POSTS, build_synthesis_prompt, comments_need_collection, prepare_comments
 
 
 class DetailPipelineTests(unittest.TestCase):
@@ -88,6 +88,44 @@ class DetailPipelineTests(unittest.TestCase):
         record = scraper.post_to_record(posts[0], 1, Path("unused"), False, True)
         self.assertEqual(record["comments_status"], "rate_limited")
         self.assertEqual(record["comments"], [])
+
+    def test_missing_collection_is_distinct_from_empty_and_unavailable_threads(self):
+        self.assertTrue(comments_need_collection({}))
+        self.assertTrue(comments_need_collection({"comments_status": "not_collected", "comments": []}))
+        self.assertTrue(comments_need_collection({"comments_status": "available"}))
+        for status in ("available", "limited", "unavailable", "rate_limited"):
+            self.assertFalse(comments_need_collection({"comments_status": status, "comments": []}))
+
+    def test_backfill_preserves_media_and_previously_collected_threads(self):
+        with tempfile.TemporaryDirectory() as folder:
+            export = Path(folder)
+            media = export / "photo.jpg"
+            media.write_bytes(b"original-image")
+            existing = {"id": "2", "comments_status": "available", "comments": [], "caption": "already collected"}
+            source = {"account": {"username": "target"}, "comments_included": False, "posts": [
+                {"id": "1", "caption": "keep caption", "media_files": [{"file": "photo.jpg"}]}, existing]}
+            manifest = export / "posts.json"
+            manifest.write_text(json.dumps(source), encoding="utf-8")
+            session = Mock()
+            session.current_user.return_value = {"username": "owner"}
+            session.comments_limit_reached = False
+            session.all_comments.return_value = [{"text": "owner clarification", "is_profile_owner": True}]
+            with patch.object(scraper, "InstagramSession", return_value=session):
+                scraper.collect_export_comments(export, "owner")
+            result = json.loads(manifest.read_text(encoding="utf-8"))
+            self.assertTrue(result["comments_included"])
+            self.assertEqual(result["posts"][0]["comments_status"], "available")
+            self.assertEqual(result["posts"][0]["comments"][0]["text"], "owner clarification")
+            self.assertEqual(result["posts"][0]["caption"], "keep caption")
+            self.assertEqual(result["posts"][0]["media_files"], source["posts"][0]["media_files"])
+            self.assertEqual(media.read_bytes(), b"original-image")
+            self.assertEqual(result["posts"][1], existing)
+            session.all_comments.assert_called_once_with("1", "target", scraper.comment_limit())
+            session.prepare_profile.assert_called_once_with("target")
+            session.close.assert_called_once()
+            with patch.object(scraper, "InstagramSession") as factory:
+                scraper.collect_export_comments(export, "owner")
+                factory.assert_not_called()
 
 
 if __name__ == "__main__":

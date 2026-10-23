@@ -23,7 +23,7 @@ from typing import Any
 from curl_cffi import requests as curl_requests
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
-from analysis_prompts import MAX_POSTS, DEFAULT_MAX_COMMENTS
+from analysis_prompts import MAX_POSTS, DEFAULT_MAX_COMMENTS, comments_need_collection
 
 from media_processing import (
     IMAGE_JPEG_QUALITY,
@@ -547,6 +547,7 @@ def collect_post_comments(session: InstagramSession, posts: list[dict[str, Any]]
     rate_limited = False
     for index, post in enumerate(posts, 1):
         post["exported_comments"] = []
+        post.pop("comments_error", None)
         if rate_limited:
             post["comments_status"] = "rate_limited"
         else:
@@ -843,12 +844,55 @@ def media_download_worker_count() -> int:
     return value
 
 
+def comment_limit() -> int:
+    try:
+        return max(1, min(500, int(os.getenv("IG_MAX_COMMENTS_PER_POST", str(DEFAULT_MAX_COMMENTS)))))
+    except ValueError:
+        return DEFAULT_MAX_COMMENTS
+
+
+def collect_export_comments(export_dir: Path, configured_username: str) -> None:
+    """Backfill old exports without downloading media or discarding valid threads."""
+    manifest = export_dir / "posts.json"
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    posts = payload.get("posts")
+    if not isinstance(posts, list) or not posts or not all(isinstance(p, dict) for p in posts):
+        raise RuntimeError("The export has no valid posts list.")
+    pending = [post for post in posts[:MAX_POSTS] if comments_need_collection(post)]
+    if not pending:
+        return
+    account = payload.get("account")
+    raw_username = account.get("username") if isinstance(account, dict) else account
+    username = profile_username_from_input(str(raw_username or payload.get("profile_url") or ""))
+    if any(not re.fullmatch(r"[0-9]+(?:_[0-9]+)?", str(post.get("id") or "")) for post in pending):
+        raise RuntimeError("The export is missing numeric Instagram post IDs; create a new export.")
+    session = InstagramSession()
+    try:
+        viewer = session.current_user()
+        if viewer["username"].casefold() != configured_username.casefold():
+            raise RuntimeError("IG_USERNAME does not match the signed-in Instagram account.")
+        session.prepare_profile(username)
+        collect_post_comments(session, pending, username, comment_limit())
+    finally:
+        session.close()
+    for post in pending:
+        post["comments"] = post.pop("exported_comments", [])
+    payload["comments_included"] = True
+    payload["comments_updated_at"] = datetime.now(timezone.utc).isoformat()
+    temporary = manifest.with_name(manifest.name + ".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(manifest)
+    print(f"Updated comments for {len(pending)} exported posts.", flush=True)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Export posts, captions, and media from the Instagram account configured in .env."
     )
     parser.add_argument("profile", nargs="?", help="Instagram profile URL or username.")
     parser.add_argument("--no-download", action="store_true", help="Save post metadata and captions only.")
+    parser.add_argument("--collect-comments", type=Path, metavar="EXPORT_DIR",
+                        help="Collect missing comments in an existing export, preserving its media.")
     return parser.parse_args()
 
 
@@ -859,6 +903,9 @@ def main() -> int:
     configured_username = os.getenv("IG_USERNAME", "").strip().lstrip("@")
     if not configured_username:
         raise RuntimeError("Set IG_USERNAME in .env to the username of your own Instagram account.")
+    if args.collect_comments is not None:
+        collect_export_comments(args.collect_comments.resolve(), configured_username)
+        return 0
     profile_input = args.profile or input("Instagram profile URL or username: ").strip()
     requested_username = profile_username_from_input(profile_input)
     session = InstagramSession()
@@ -871,11 +918,7 @@ def main() -> int:
     try:
         posts = session.all_posts(requested_username, account["username"], account["user_id"])
         if include_comments:
-            try:
-                comment_limit = max(1, min(500, int(os.getenv("IG_MAX_COMMENTS_PER_POST", str(DEFAULT_MAX_COMMENTS)))))
-            except ValueError:
-                comment_limit = DEFAULT_MAX_COMMENTS
-            collect_post_comments(session, posts, requested_username, comment_limit)
+            collect_post_comments(session, posts, requested_username, comment_limit())
     finally:
         session.close()
     output_dir = Path(os.getenv("IG_OUTPUT_DIR", "exports").strip() or "exports")

@@ -36,6 +36,8 @@ These are browser session credentials. Keep `.env` on your computer and never pa
 
 Comments are enabled by default (the web pipeline always enables them). Up to 100 comments per post are collected, including available preview replies; full reply threads are not fetched. Set `IG_MAX_COMMENTS_PER_POST` from 1 to 500 to change collection limits. CLI users can opt out with `IG_INCLUDE_COMMENTS=false`. Collection uses the active Playwright session before its browser closes. Restricted threads are recorded as unavailable; a rate limit stops further comment requests without discarding the posts.
 
+The web pipeline checks comment collection before sending material to the model. Resuming an older export without comments automatically collects its missing threads while preserving downloaded media. Empty/restricted threads that were already checked are not fetched again. For an existing CLI export, run `python scrape_instagram.py --collect-comments exports/EXPORT_DIRECTORY`, then run the analyzer normally (not `--synthesize-only`) to include the new evidence. Completed old reports remain unchanged.
+
 This local exporter uses headless Playwright to load the profile and collect its GraphQL responses. These web endpoints are not a documented public scraping API and may change. Session cookies can expire or be revoked.
 
 Downloaded photos are normalized to JPEG quality 80 and at most 1280 px on the long edge when that makes the file smaller. Video variants are selected at up to 720 px, then optionally transcoded with FFmpeg to H.264 CRF 28; the transcoded file replaces the download only when it is smaller. Install FFmpeg and make sure it is on `PATH` to enable video compression. If FFmpeg is unavailable, the selected source video is kept.

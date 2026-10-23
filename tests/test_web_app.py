@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from web_backend import JobManager, normalize_profile, password_matches, result_cost
+from web_backend import Job, JobManager, normalize_profile, password_matches, result_cost
 
 
 class WebBoundaryTests(unittest.TestCase):
@@ -36,7 +36,8 @@ class WebBoundaryTests(unittest.TestCase):
                     export = Path(env["IG_OUTPUT_DIR"]) / "fixture"
                     (export / "media").mkdir(parents=True)
                     (export / "media" / "photo.jpg").write_bytes(b"test-image")
-                    (export / "posts.json").write_text(json.dumps({"posts": [{"id": "1", "media_files": [{"file": "photo.jpg"}]}]}), encoding="utf-8")
+                    (export / "posts.json").write_text(json.dumps({"posts": [{"id": "1", "comments": [],
+                        "comments_status": "available", "media_files": [{"file": "photo.jpg"}]}]}), encoding="utf-8")
                 else:
                     export = Path(arguments[0])
                     (export / "profile_analysis.json").write_text(json.dumps({"account": job.username, "profile_analysis": "Test conclusion", "post_count": 1}), encoding="utf-8")
@@ -60,6 +61,65 @@ class WebBoundaryTests(unittest.TestCase):
                     jobs.artifact("owner-b", job_id, "profile_analysis.json")
                 with self.assertRaises(ValueError):
                     jobs.artifact("owner-a", job_id, "../../.env")
+            finally:
+                jobs.pool.shutdown(wait=True)
+
+
+    def test_resumed_legacy_export_collects_comments_before_analysis(self):
+        for status in (None, "not_collected", "available", "limited", "unavailable", "rate_limited"):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as temporary:
+                calls = []
+                class OfflineManager(JobManager):
+                    def _process(self, job, script, arguments, env, config):
+                        assert env["IG_INCLUDE_COMMENTS"] == "true"
+                        assert env["IG_MAX_COMMENTS_PER_POST"] == "100"
+                        assert int(env["OPENCODE_POST_MAX_OUTPUT_TOKENS"]) >= 2048
+                        assert int(env["OPENCODE_MAX_MEDIA_PER_POST"]) >= 6
+                        calls.append(script)
+                        manifest = job.export_dir / "posts.json"
+                        source = json.loads(manifest.read_text(encoding="utf-8"))
+                        if script == "scrape_instagram.py":
+                            assert arguments == ["--collect-comments", str(job.export_dir)]
+                            source["posts"][0].update({"comments_status": "available", "comments": [{"text": "owner reply"}]})
+                            manifest.write_text(json.dumps(source), encoding="utf-8")
+                        else:
+                            assert source["posts"][0]["comments_status"] != "not_collected"
+                            (job.export_dir / "profile_analysis.json").write_text("{}", encoding="utf-8")
+                export = Path(temporary) / "saved-export"
+                export.mkdir()
+                post = {"id": "1", "media_files": [{"file": "photo.jpg"}]}
+                if status is not None:
+                    post.update({"comments_status": status, "comments": []})
+                (export / "posts.json").write_text(json.dumps({"posts": [post]}), encoding="utf-8")
+                jobs = OfflineManager(Path(temporary) / "runtime")
+                try:
+                    job = Job("fixture", "owner-a", "target", export_dir=export)
+                    jobs._run(job, {"IG_INCLUDE_COMMENTS": "false", "OPENCODE_MAX_MEDIA_PER_POST": "3",
+                                    "OPENCODE_POST_MAX_OUTPUT_TOKENS": "1024"})
+                    self.assertEqual(job.state, "complete", job.error)
+                    expected = ["analyze_instagram_profile.py"]
+                    if status in {None, "not_collected"}:
+                        expected.insert(0, "scrape_instagram.py")
+                    self.assertEqual(calls, expected)
+                finally:
+                    jobs.pool.shutdown(wait=True)
+
+    def test_missing_comments_after_backfill_stops_before_paid_analysis(self):
+        calls = []
+        class OfflineManager(JobManager):
+            def _process(self, job, script, arguments, env, config):
+                calls.append(script)
+        with tempfile.TemporaryDirectory() as temporary:
+            export = Path(temporary) / "saved-export"
+            export.mkdir()
+            (export / "posts.json").write_text(json.dumps({"posts": [{"id": "1", "media_files": [{"file": "photo.jpg"}]}]}), encoding="utf-8")
+            jobs = OfflineManager(Path(temporary) / "runtime")
+            try:
+                job = Job("fixture", "owner-a", "target", export_dir=export)
+                jobs._run(job, {})
+                self.assertEqual(job.state, "failed")
+                self.assertIn("збір коментарів", job.error)
+                self.assertEqual(calls, ["scrape_instagram.py"])
             finally:
                 jobs.pool.shutdown(wait=True)
 

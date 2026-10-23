@@ -7,6 +7,13 @@ PROMPT_VERSION = 4
 MAX_POSTS = 100
 DEFAULT_MAX_COMMENTS = 100
 DEFAULT_COMMENT_CHAR_BUDGET = 20000
+COLLECTED_COMMENT_STATUSES = frozenset({"available", "limited", "unavailable", "rate_limited"})
+
+
+def comments_need_collection(post: dict) -> bool:
+    """Distinguish an attempted (possibly empty/restricted) thread from old exports."""
+    return (post.get("comments_status") not in COLLECTED_COMMENT_STATUSES
+            or not isinstance(post.get("comments"), list))
 
 
 def prepare_comments(post: dict, max_comments: int = DEFAULT_MAX_COMMENTS,
@@ -118,6 +125,10 @@ def build_synthesis_prompt(account: str, analyses: list[dict]) -> str:
 ## Що додають коментарі
 Додай змістовні уточнення автора, характер запитань, відгуки й суперечності.
 Познач джерело тверджень і поясни, якщо коментарі недоступні, обмежені або їх не збирали.
+Не ототожнюй ці ситуації: not_collected — збір не виконувався; unavailable/rate_limited —
+збір пробували, але доступ обмежено; available із нульовою кількістю — запит повернув порожній список.
+Технічні назви статусів у звіті не виводь. Якщо коментарів не передано, поясни це одним реченням,
+без переліку всіх обставин, які неможливо перевірити. Не домислюй причину відсутності даних.
 Не зводь самі компліменти до підтверджених фактів про власника.
 ## Інші деталі та суперечності
 Збережи конкретні нечасті спостереження, які не ввійшли вище, або коротко скажи, що додаткових немає.

@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping
-from analysis_prompts import MAX_POSTS
+from analysis_prompts import MAX_POSTS, DEFAULT_MAX_COMMENTS, comments_need_collection
 
 ROOT = Path(__file__).resolve().parent
 RUNTIME = ROOT / ".runtime"
@@ -334,6 +334,7 @@ class JobManager:
             env.update({"PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1", "IG_INCLUDE_COMMENTS": "true",
                 "IG_OUTPUT_DIR": str(work_dir / "exports")})
             env.setdefault("IG_MEDIA_DOWNLOAD_WORKERS", "2")
+            env.setdefault("IG_MAX_COMMENTS_PER_POST", str(DEFAULT_MAX_COMMENTS))
             env.setdefault("OPENCODE_MAX_CONCURRENT_POST_ANALYSES", "4")
             # Preserve the richer web analysis even when an existing deployment
             # still has the earlier 1024-token / three-media Secrets values.
@@ -351,11 +352,21 @@ class JobManager:
                 if not manifests:
                     raise RuntimeError("Instagram не повернув матеріалів для цього профілю.")
                 job.export_dir = manifests[-1].parent
-            scrape_seconds = 0.0 if resumed else time.monotonic() - scrape_started
             payload = json.loads((job.export_dir / "posts.json").read_text(encoding="utf-8"))
-            posts = payload.get("posts", [])
-            if not posts:
+            posts = payload.get("posts", [])[:MAX_POSTS]
+            if not posts or not all(isinstance(p, dict) for p in posts):
                 raise RuntimeError("У профілі немає доступних публікацій.")
+            # Resuming an export made before comment collection was enabled must
+            # collect those comments before the model sees the old source data.
+            missing_comments = any(comments_need_collection(p) for p in posts)
+            if missing_comments:
+                self._update(job, stage="comments", done=0, total=len(posts))
+                self._process(job, "scrape_instagram.py", ["--collect-comments", str(job.export_dir)], env, config)
+                payload = json.loads((job.export_dir / "posts.json").read_text(encoding="utf-8"))
+                posts = payload.get("posts", [])[:MAX_POSTS]
+                if not posts or any(not isinstance(p, dict) or comments_need_collection(p) for p in posts):
+                    raise RuntimeError("Не вдалося перевірити збір коментарів. Продовж запуск або створи новий аналіз.")
+            scrape_seconds = time.monotonic() - scrape_started if not resumed or missing_comments else 0.0
             if not any(m.get("file") for p in posts for m in p.get("media_files", [])):
                 raise RuntimeError("Не вдалося завантажити медіа для аналізу.")
             self._update(job, stage="analysis", done=0, total=len(posts))
