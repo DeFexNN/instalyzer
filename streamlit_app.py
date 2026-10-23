@@ -62,8 +62,8 @@ def show_sidebar(config: dict) -> None:
         st.space("large")
         with st.container(border=True):
             ready, _ = live_configuration(config)
-            st.markdown("**50 дописів. Один висновок.**")
-            st.caption("Фото, підписи й повторювані теми — у зручному звіті.")
+            st.markdown("**100 дописів. Повніша картина.**")
+            st.caption("Фото, підписи та коментарі: професійні теми, хобі й особистий контекст.")
             st.html(f'<span class="pill{ "" if ready else " demo" }">● {"Live-доступ налаштовано" if ready else "Демонстраційний режим"}</span>')
 
 
@@ -93,9 +93,9 @@ def show_access(config: dict) -> None:
 def show_home(config: dict) -> None:
     left, right = st.columns([1.55, 1], gap="large")
     with left:
-        st.html('<div class="eyebrow">INSTAGRAM → INSIGHTS</div><div class="hero-title">За фотографіями —<br><span>ціла історія.</span></div><p class="hero-copy">Дізнайся, які інтереси й заняття простежуються у профілі. Фото та підписи перетворюються на один змістовний висновок.</p><div class="chips"><span class="chip">До 50 дописів</span><span class="chip">Фото + підписи</span><span class="chip">Висновки з підставами</span></div>')
+        st.html('<div class="eyebrow">INSTAGRAM → INSIGHTS</div><div class="hero-title">За фотографіями —<br><span>ціла історія.</span></div><p class="hero-copy">Дізнайся, які інтереси й заняття простежуються у профілі. Фото та підписи перетворюються на один змістовний висновок.</p><div class="chips"><span class="chip">До 100 дописів</span><span class="chip">Фото + підписи + коментарі</span><span class="chip">Висновки з підставами</span></div>')
     with right:
-        st.html('<div class="hero-art"><div class="art-kicker">ВІД ДЕТАЛЕЙ ДО ЗАГАЛЬНОЇ КАРТИНИ</div><div class="art-profile"><div class="art-avatar">a</div><div><div class="art-name">@alex_moments</div><div class="art-small">Демонстраційний профіль</div></div></div><div class="art-topic"><span class="art-icon">↗</span><div><b>Подорожі та нові місця</b><small>Повторювана тема у стрічці</small></div><span class="art-check">✓</span></div><div class="art-topic"><span class="art-icon" style="background:#eae7f5;color:#8a77b0">◉</span><div><b>Фотографія та композиція</b><small>Висновок із видимих деталей</small></div><span class="art-check">✓</span></div></div>')
+        st.html('<div class="hero-art"><div class="art-kicker">ВІД ДЕТАЛЕЙ ДО ЗАГАЛЬНОЇ КАРТИНИ</div><div class="art-profile"><div class="art-avatar">a</div><div><div class="art-name">@dental_studio_demo</div><div class="art-small">Демонстраційний профіль</div></div></div><div class="art-topic"><span class="art-icon">↗</span><div><b>Стоматологічна практика</b><small>Повторювана тема у стрічці</small></div><span class="art-check">✓</span></div><div class="art-topic"><span class="art-icon" style="background:#eae7f5;color:#8a77b0">◉</span><div><b>Життя поза роботою</b><small>Згадки у підписах і відповідях автора</small></div><span class="art-check">✓</span></div></div>')
 
     main, example = st.columns([1.55, 1], gap="large")
     with main:
@@ -105,7 +105,7 @@ def show_home(config: dict) -> None:
             show_access(config)
             with st.form("analysis_form", border=False):
                 profile = st.text_input("Посилання на Instagram", placeholder="https://www.instagram.com/username/", key="profile_input")
-                consent = st.checkbox("Дозволяю передати фото й підписи для аналізу. Contributor-модель може використовувати їх для навчання.", key="training_consent")
+                consent = st.checkbox("Дозволяю передати фото, підписи й коментарі для аналізу. Contributor-модель може використовувати їх для навчання.", key="training_consent")
                 run = st.form_submit_button("Проаналізувати профіль  →", type="primary", width="stretch",
                     disabled=not authorized(config) or bool(st.session_state.get("active_job")))
             if run:
@@ -122,10 +122,10 @@ def show_home(config: dict) -> None:
             st.caption("Новий аналіз може зайняти кілька хвилин. Час залежить від кількості й типів медіа.")
     with example:
         with st.container(border=True, key="example_card"):
-            st.html('<span class="pill demo">ПРИКЛАД ЗВІТУ</span><div class="preview-title">Спочатку поглянь,<br>що ти отримаєш.</div><div class="preview-text">Загальний портрет стрічки, ймовірні інтереси та чесне пояснення меж висновків.</div><div class="topic-row"><span class="topic">Подорожі</span><span class="topic">Фотографія</span><span class="topic">Активний відпочинок</span></div>')
+            st.html('<span class="pill demo">ПРИКЛАД ЗВІТУ</span><div class="preview-title">Спочатку поглянь,<br>що ти отримаєш.</div><div class="preview-text">Загальний портрет стрічки, ймовірні інтереси та чесне пояснення меж висновків.</div><div class="topic-row"><span class="topic">Професійна тематика</span><span class="topic">Хобі</span><span class="topic">Сімейний контекст</span></div>')
             st.button("Переглянути демо-звіт", icon=":material/arrow_forward:", width="stretch", key="home_demo",
                 on_click=navigate, args=("result", "demo"))
-    st.html('<div class="section-label">ТРИ ПРОСТІ КРОКИ</div><div class="step-grid"><div><span class="step-num">01</span><b>Додай профіль</b><p>Посилання або нік. Збираємо до 50 доступних дописів.</p></div><div><span class="step-num">02</span><b>Знаходимо теми</b><p>Порівнюємо фото й підписи, відділяючи факти від припущень.</p></div><div><span class="step-num">03</span><b>Отримай висновок</b><p>Прочитай звіт і завантаж його одним натисканням.</p></div></div>')
+    st.html('<div class="section-label">ТРИ ПРОСТІ КРОКИ</div><div class="step-grid"><div><span class="step-num">01</span><b>Додай профіль</b><p>Посилання або нік. Збираємо до 100 доступних дописів.</p></div><div><span class="step-num">02</span><b>Знаходимо теми</b><p>Порівнюємо фото й підписи, відділяючи факти від припущень.</p></div><div><span class="step-num">03</span><b>Отримай висновок</b><p>Прочитай звіт і завантаж його одним натисканням.</p></div></div>')
 
 
 def show_running(config: dict) -> None:
@@ -157,14 +157,14 @@ def show_running(config: dict) -> None:
                     navigate("new")
                     st.rerun()
                 return
-            stages = ("scraping", "media", "analysis", "synthesis")
-            labels = ("Збір дописів", "Завантаження медіа", "Аналіз матеріалів", "Фінальний висновок")
+            stages = ("scraping", "comments", "media", "analysis", "synthesis")
+            labels = ("Збір дописів", "Коментарі", "Завантаження медіа", "Аналіз матеріалів", "Фінальний висновок")
             current = stages.index(job["stage"]) if job["stage"] in stages else -1
             parts = [f'<span class="run-step {"done" if i < current else "active" if i == current else ""}">{"✓ " if i < current else ""}{label}</span>' for i, label in enumerate(labels)]
             st.html('<div class="run-steps">' + "".join(parts) + '</div>')
-            messages = {"queued": "Очікуємо в черзі. Запуски виконуються по одному.", "scraping": "Читаємо доступні дописи профілю…", "media": f"Підготовлено {job['done']} із {job['total']} дописів.", "analysis": f"Проаналізовано {job['done']} із {job['total']} дописів.", "synthesis": "Усі матеріали оброблено. Формуємо спільний висновок…"}
+            messages = {"queued": "Очікуємо в черзі. Запуски виконуються по одному.", "scraping": "Читаємо доступні дописи профілю…", "comments": f"Перевірено коментарі у {job['done']} із {job['total']} дописів.", "media": f"Підготовлено {job['done']} із {job['total']} дописів.", "analysis": f"Проаналізовано {job['done']} із {job['total']} дописів.", "synthesis": "Усі матеріали оброблено. Формуємо спільний висновок…"}
             st.caption(messages.get(job["stage"], "Працюємо…"))
-            if job["stage"] in {"media", "analysis"}:
+            if job["stage"] in {"comments", "media", "analysis"}:
                 st.progress(min(1.0, job["done"] / max(1, job["total"])))
             if st.button("Зупинити", type="tertiary", icon=":material/stop_circle:", key="cancel_job"):
                 manager().cancel(st.session_state.owner_id, job_id)
@@ -186,9 +186,12 @@ def show_result() -> None:
         st.rerun()
     st.html('<span class="pill demo">ДЕМОНСТРАЦІЙНИЙ ПРИКЛАД</span>' if is_demo else '<span class="pill">✓ АНАЛІЗ ЗАВЕРШЕНО</span>')
     st.title(f"Профіль @{username}")
-    st.caption("Вигаданий профіль для ознайомлення з форматом." if is_demo else "Підсумкові висновки за доступними фото, відеокадрами та підписами.")
-    a, b, c = st.columns(3)
+    st.caption("Вигаданий приклад професійного профілю з особистими епізодами. Цифри демонстраційні." if is_demo else "Професійні теми, можливі хобі, прямо описані сімейні зв’язки та контекст коментарів.")
+    a, comments_metric, b, c = st.columns(4)
     a.metric("Дописів у вибірці", str(payload.get("post_count", 0)))
+    coverage = payload.get("comment_coverage") or {}
+    comments_metric.metric("Коментарів проаналізовано", str(coverage["analyzed"]) if "analyzed" in coverage else "—",
+        help="Кількість коментарів, переданих моделі. Повнота залежить від доступності, обмеження кількості та обсягу тексту.")
     execution = payload.get("web_execution") or {}
     b.metric("Повний час запуску", format_duration(execution.get("total_duration_seconds", payload.get("analysis_duration_seconds"))),
         help="Для нового вебзапуску: збір постів, завантаження, підготовка медіа та всі запити ШІ. При продовженні показує час поточного запуску.")
@@ -197,15 +200,15 @@ def show_result() -> None:
     st.space("small")
     summary, materials, details = st.tabs(["Висновки", "Матеріали", "Про аналіз"])
     with summary:
-        st.html('<div class="report-intro">Сильні твердження спираються на повторювані теми. Припущення супроводжуються підставами та рівнем упевненості.</div>')
+        st.html('<div class="report-intro">Професійна тематика й особисті епізоди розглядаються окремо. Для припущень зазначено джерело, підстави та впевненість.</div>')
         st.markdown(str(payload.get("profile_analysis") or "Висновок відсутній."))
     with materials:
         if is_demo:
             st.caption("Схематичні ілюстрації тем вигаданого прикладу. Реальних фото тут немає.")
-            st.html('<div class="demo-visuals"><div class="demo-visual"><span class="symbol">⌁</span><strong>Подорожі</strong></div><div class="demo-visual"><span class="symbol">◉</span><strong>Фотографія</strong></div><div class="demo-visual"><span class="symbol">△</span><strong>Активний відпочинок</strong></div></div>')
+            st.html('<div class="demo-visuals"><div class="demo-visual"><span class="symbol">⌁</span><strong>Стоматологічна практика</strong></div><div class="demo-visual"><span class="symbol">◉</span><strong>Музичне захоплення</strong></div><div class="demo-visual"><span class="symbol">△</span><strong>Прямо описаний сімейний епізод</strong></div></div>')
         else:
             previews = manager().media_preview(st.session_state.owner_id, result_id)
-            st.caption("Попередній перегляд до 12 завантажених фото. Для аналізу каруселей використовується до трьох вибраних елементів; для відео — один кадр.")
+            st.caption("Попередній перегляд до 12 завантажених фото. Для каруселі за замовчуванням аналізуються до шести рівномірно вибраних елементів; для відео — один кадр.")
             if previews:
                 columns = st.columns(3)
                 for i, path in enumerate(previews):
@@ -216,7 +219,17 @@ def show_result() -> None:
         st.markdown("**Що враховано**")
         st.write("Фото, вибрані кадри відео й підписи. Аналіз описує видимі заняття та повторювані теми. Він не встановлює приховані особисті обставини.")
         settings_data = payload.get("analysis_settings") or {}
-        st.caption(f"Модель: {payload.get('model', '—')} · До {settings_data.get('max_media_per_post', 3)} медіа на допис · Фото до {settings_data.get('image_max_edge', 768)} px")
+        st.caption(f"Модель: {payload.get('model', '—')} · До {settings_data.get('max_media_per_post', 6)} медіа на допис · Фото до {settings_data.get('image_max_edge', 768)} px")
+        if coverage:
+            st.caption(f"Коментарі: зібрано {coverage.get('collected', 0)}, проаналізовано {coverage.get('analyzed', 0)}, поза текстовою вибіркою {coverage.get('sampled_out', 0)}. Охоплюються основні коментарі та доступні попередні відповіді, а не всі гілки.")
+            if coverage.get("posts_unavailable"):
+                st.warning(f"Коментарі недоступні для {coverage['posts_unavailable']} дописів. Причиною можуть бути налаштування Instagram або обмеження запитів.")
+            if coverage.get("posts_limited"):
+                st.caption(f"Дописів з обмеженою кількістю зібраних коментарів: {coverage['posts_limited']}.")
+            if coverage.get("posts_not_collected"):
+                st.info(f"Для {coverage['posts_not_collected']} дописів у цьому збереженому звіті коментарі не збиралися.")
+            if coverage.get("texts_truncated"):
+                st.caption(f"Частково скорочених текстів коментарів: {coverage['texts_truncated']}.")
         if not is_demo:
             skipped = sum(int(p.get("media_skipped", 0)) for p in payload.get("posts", []))
             if skipped:
@@ -260,14 +273,14 @@ def show_history() -> None:
 def show_about(config: dict) -> None:
     st.html('<div class="eyebrow">БІЛЬШЕ КОНТЕКСТУ, МЕНШЕ ЗДОГАДОК</div>')
     st.title("Що бачить Instalyzer")
-    st.write("Застосунок шукає повторювані теми в доступних матеріалах профілю: чим наповнена стрічка, які заняття прямо видно й що підтверджують підписи.")
-    for title, body in (("Збираємо до 50 дописів", "Instagram відкривається через налаштований сеанс власника демо. Зберігаються доступні фото й відео, дати та підписи."),
-        ("Порівнюємо матеріали", "Зображення готуються до аналізу. Для каруселі беруться до трьох рівномірно вибраних елементів; для відео — один кадр. Така вибірка має обмеження."),
-        ("Формуємо один звіт", "Загальний портрет профілю, ймовірні інтереси з підставами, межі висновків і підсумок. Окремі публікації у фінальному Markdown не перелічуються.")):
+    st.write("Застосунок поєднує фото, підписи й доступні коментарі. Окремо розглядає професійний контент, можливі хобі, особисті епізоди й прямо названі автором сімейні зв’язки.")
+    for title, body in (("Збираємо до 100 дописів", "Instagram відкривається через налаштований сеанс власника демо. Зберігаються доступні фото й відео, дати, підписи й до 100 коментарів на допис із доступними попередніми відповідями."),
+        ("Порівнюємо матеріали", "Зображення готуються до аналізу. Для каруселі беруться до шести рівномірно вибраних елементів; для відео — один кадр. Така вибірка має обмеження."),
+        ("Формуємо один звіт", "Окремі розділи про професійні теми, хобі, прямо описаний сімейний контекст, коментарі, інші деталі, межі висновків і підсумок. Окремі публікації у фінальному Markdown не перелічуються.")):
         with st.container(border=True):
             st.subheader(title)
             st.write(body)
-    st.info("Використовується Contributor-модель. Надіслані фото, підписи та відповіді можуть використовуватися Meta для навчання. Перед кожним новим запуском це потрібно підтвердити.")
+    st.info("Використовується Contributor-модель. Надіслані фото, підписи, коментарі та відповіді можуть використовуватися Meta для навчання. Перед кожним новим запуском це потрібно підтвердити.")
     with st.expander("Налаштування для власника демо"):
         ready, missing = live_configuration(config)
         st.write("Live-запуски готові." if ready else "Для live-запусків додай конфігурацію у Streamlit Secrets.")

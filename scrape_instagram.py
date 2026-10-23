@@ -23,6 +23,7 @@ from typing import Any
 from curl_cffi import requests as curl_requests
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
+from analysis_prompts import MAX_POSTS, DEFAULT_MAX_COMMENTS
 
 from media_processing import (
     IMAGE_JPEG_QUALITY,
@@ -36,7 +37,6 @@ from media_processing import (
 
 ROOT = Path(__file__).resolve().parent
 ENV_FILE = ROOT / ".env"
-MAX_POSTS = 50
 DEFAULT_MEDIA_DOWNLOAD_WORKERS = 4
 MAX_MEDIA_DOWNLOAD_WORKERS = 6
 MAX_CONCURRENT_VIDEO_TRANSCODES = 2
@@ -441,12 +441,43 @@ class InstagramSession:
                 ]
         return post
 
-    def all_comments(self, media_id: str) -> list[dict[str, Any]]:
+    def get_comments_json(self, media_id: str, params: dict[str, str]) -> dict[str, Any]:
+        endpoint = f"media/{urllib.parse.quote(media_id, safe='')}/comments/"
+        if self.page is None:
+            return self.get_json(endpoint, params)
+        url = f"{INSTAGRAM_API_BASE}/{endpoint}?{urllib.parse.urlencode(params)}"
+        response = self.page.evaluate("""async ({url, csrf}) => {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 20000);
+            try {
+                const response = await fetch(url, {credentials: 'include', signal: controller.signal,
+                    headers: {'X-IG-App-ID':'936619743392459', 'X-CSRFToken': csrf,
+                              'X-Requested-With':'XMLHttpRequest'}});
+                let payload = null;
+                try { payload = await response.json(); } catch (_) {}
+                return {status: response.status, payload};
+            } finally { clearTimeout(timer); }
+        }""", {"url": url, "csrf": self.csrf_token})
+        if response.get("status") != 200:
+            raise RuntimeError(f"Instagram comments returned HTTP {response.get('status')}.")
+        payload = response.get("payload")
+        if not isinstance(payload, dict) or payload.get("status") == "fail":
+            raise RuntimeError("Instagram comments are unavailable for this post.")
+        return payload
+
+    def all_comments(self, media_id: str, profile_username: str = "",
+                     max_comments: int = DEFAULT_MAX_COMMENTS) -> list[dict[str, Any]]:
         comments: list[dict[str, Any]] = []
+        self.comments_limit_reached = False
         seen_ids: set[str] = set()
         seen_cursors: set[str] = set()
         cursor: str | None = None
+        pages = 0
         while True:
+            pages += 1
+            if pages > 20:
+                self.comments_limit_reached = True
+                break
             params = {
                 "can_support_threading": "true",
                 "permalink_enabled": "false",
@@ -454,11 +485,20 @@ class InstagramSession:
             }
             if cursor:
                 params["min_id"] = cursor
-            result = self.get_json(f"media/{urllib.parse.quote(media_id, safe='')}/comments/", params)
+            result = self.get_comments_json(media_id, params)
             batch = result.get("comments", [])
             if not isinstance(batch, list):
                 raise RuntimeError("Instagram returned an unexpected comments list.")
-            for comment in batch:
+            flattened = []
+            for parent in batch:
+                if not isinstance(parent, dict):
+                    continue
+                flattened.append((parent, None, None))
+                for children_key in ("preview_child_comments", "child_comments"):
+                    children = parent.get(children_key)
+                    if isinstance(children, list):
+                        flattened.extend((child, str(parent.get("pk") or parent.get("id") or ""), parent.get("text", "")) for child in children if isinstance(child, dict))
+            for position, (comment, parent_id, parent_text) in enumerate(flattened):
                 if not isinstance(comment, dict):
                     continue
                 comment_id = str(comment.get("pk") or comment.get("id") or "")
@@ -470,7 +510,12 @@ class InstagramSession:
                 created_at = comment.get("created_at")
                 comments.append(
                     {
+                        "id": comment_id or None,
                         "username": user.get("username"),
+                        "is_profile_owner": bool(profile_username) and str(user.get("username") or "").casefold() == profile_username.casefold(),
+                        "is_reply": parent_id is not None,
+                        "parent_id": parent_id,
+                        "parent_text": parent_text,
                         "text": comment.get("text", ""),
                         "created_at": datetime.fromtimestamp(created_at, timezone.utc).isoformat()
                         if isinstance(created_at, (int, float))
@@ -479,17 +524,43 @@ class InstagramSession:
                         "reply_count": comment.get("child_comment_count", comment.get("reply_count", 0)),
                     }
                 )
+                if len(comments) >= max_comments:
+                    self.comments_limit_reached = position < len(flattened) - 1 or bool(result.get("next_min_id"))
+                    return comments
 
             next_cursor = result.get("next_min_id")
             if not next_cursor:
                 break
             next_cursor = str(next_cursor)
             if next_cursor in seen_cursors:
+                self.comments_limit_reached = True
                 break
             seen_cursors.add(next_cursor)
             cursor = next_cursor
 
         return comments
+
+
+def collect_post_comments(session: InstagramSession, posts: list[dict[str, Any]], username: str,
+                          max_comments: int = DEFAULT_MAX_COMMENTS) -> None:
+    """Comments are best effort: a restricted thread never discards the post export."""
+    rate_limited = False
+    for index, post in enumerate(posts, 1):
+        post["exported_comments"] = []
+        if rate_limited:
+            post["comments_status"] = "rate_limited"
+        else:
+            try:
+                media_id = str(post.get("pk") or post.get("id") or "")
+                if not media_id:
+                    raise RuntimeError("Missing media identifier.")
+                post["exported_comments"] = session.all_comments(media_id, username, max_comments)
+                post["comments_status"] = "limited" if getattr(session, "comments_limit_reached", False) else "available"
+            except Exception as exc:
+                rate_limited = "429" in str(exc)
+                post["comments_status"] = "rate_limited" if rate_limited else "unavailable"
+                post["comments_error"] = "Instagram rate limit" if rate_limited else "Comments could not be retrieved"
+        print(f"Collected comments {index}/{len(posts)}.", flush=True)
 
 
 class InstagramRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -713,6 +784,9 @@ def post_to_record(
         record["media_files"] = downloaded
     if include_comments:
         record["comments"] = post.get("exported_comments", [])
+        record["comments_status"] = post.get("comments_status", "unavailable")
+        if post.get("comments_error"):
+            record["comments_error"] = post["comments_error"]
     return record
 
 
@@ -793,15 +867,17 @@ def main() -> int:
         raise RuntimeError("IG_USERNAME does not match the signed-in Instagram account.")
 
     session.prepare_profile(requested_username)
+    include_comments = os.getenv("IG_INCLUDE_COMMENTS", "true").strip().casefold() in {"1", "true", "yes", "on"}
     try:
         posts = session.all_posts(requested_username, account["username"], account["user_id"])
+        if include_comments:
+            try:
+                comment_limit = max(1, min(500, int(os.getenv("IG_MAX_COMMENTS_PER_POST", str(DEFAULT_MAX_COMMENTS)))))
+            except ValueError:
+                comment_limit = DEFAULT_MAX_COMMENTS
+            collect_post_comments(session, posts, requested_username, comment_limit)
     finally:
         session.close()
-    include_comments = os.getenv("IG_INCLUDE_COMMENTS", "false").strip().casefold() in {"1", "true", "yes", "on"}
-    if include_comments:
-        for post in posts:
-            media_id = str(post.get("pk") or post.get("id") or "")
-            post["exported_comments"] = session.all_comments(media_id) if media_id else []
     output_dir = Path(os.getenv("IG_OUTPUT_DIR", "exports").strip() or "exports")
     if not output_dir.is_absolute():
         output_dir = ROOT / output_dir

@@ -30,6 +30,9 @@ class WebBoundaryTests(unittest.TestCase):
         class OfflineManager(JobManager):
             def _process(self, job, script, arguments, env, config):
                 if script == "scrape_instagram.py":
+                    assert env["IG_INCLUDE_COMMENTS"] == "true"
+                    assert int(env["OPENCODE_POST_MAX_OUTPUT_TOKENS"]) >= 2048
+                    assert int(env["OPENCODE_MAX_MEDIA_PER_POST"]) >= 6
                     export = Path(env["IG_OUTPUT_DIR"]) / "fixture"
                     (export / "media").mkdir(parents=True)
                     (export / "media" / "photo.jpg").write_bytes(b"test-image")
@@ -68,7 +71,7 @@ class StreamlitSmokeTests(unittest.TestCase):
         self.assertEqual(len(app.exception), 0)
         app.button(key="home_demo").click().run()
         self.assertEqual(len(app.exception), 0)
-        self.assertIn("alex_moments", app.title[0].value)
+        self.assertIn("dental_studio_demo", app.title[0].value)
         self.assertEqual(len(app.get("download_button")), 2)
         app.button(key="nav_history").click().run()
         self.assertEqual(len(app.exception), 0)

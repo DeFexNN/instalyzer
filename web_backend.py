@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping
+from analysis_prompts import MAX_POSTS
 
 ROOT = Path(__file__).resolve().parent
 RUNTIME = ROOT / ".runtime"
@@ -32,7 +33,8 @@ CONFIG_KEYS = (*REQUIRED, "APP_PASSWORD", "APP_ENABLE_LIVE", "APP_MAX_RUNS_PER_D
     "IG_PS_L", "IG_PS_N", "IG_RD_CHALLENGE", "IG_WD", "OPENCODE_MODEL",
     "OPENCODE_IMAGE_MAX_EDGE", "OPENCODE_MAX_MEDIA_PER_POST", "OPENCODE_POST_MAX_OUTPUT_TOKENS",
     "OPENCODE_MAX_CONCURRENT_POST_ANALYSES", "OPENCODE_POST_REASONING_EFFORT",
-    "OPENCODE_SYNTHESIS_REASONING_EFFORT", "IG_MEDIA_DOWNLOAD_WORKERS", "PLAYWRIGHT_CHROMIUM_EXECUTABLE")
+    "OPENCODE_SYNTHESIS_REASONING_EFFORT", "IG_MEDIA_DOWNLOAD_WORKERS", "PLAYWRIGHT_CHROMIUM_EXECUTABLE",
+    "IG_MAX_COMMENTS_PER_POST", "OPENCODE_MAX_COMMENTS_PER_POST", "OPENCODE_COMMENT_CHAR_BUDGET")
 TERMINAL = {"complete", "failed", "cancelled"}
 
 
@@ -105,7 +107,7 @@ class Job:
     state: str = "queued"
     stage: str = "queued"
     done: int = 0
-    total: int = 50
+    total: int = MAX_POSTS
     created: float = field(default_factory=time.time)
     started: float | None = None
     finished: float | None = None
@@ -260,6 +262,9 @@ class JobManager:
             match = re.search(r"Prepared (\d+)/(\d+)", line)
             if match:
                 job.stage, job.done, job.total = "media", int(match[1]), int(match[2])
+            match = re.search(r"Collected comments (\d+)/(\d+)", line)
+            if match:
+                job.stage, job.done, job.total = "comments", int(match[1]), int(match[2])
             match = re.search(r"Готово: (\d+)/(\d+)", line)
             if match:
                 job.done, job.total = int(match[1]), int(match[2])
@@ -300,7 +305,7 @@ class JobManager:
                 if job.cancel.is_set():
                     self._terminate(process)
                     raise InterruptedError("Аналіз зупинено.")
-                if time.time() - (job.started or time.time()) > 900:
+                if time.time() - (job.started or time.time()) > 1800:
                     self._terminate(process)
                     raise TimeoutError("Час очікування перевищено. Спробуй ще раз пізніше.")
                 try:
@@ -326,10 +331,18 @@ class JobManager:
             work_dir.mkdir(parents=True, exist_ok=True)
             env = os.environ.copy()
             env.update({k: v for k, v in config.items() if k in CONFIG_KEYS and not k.startswith("APP_")})
-            env.update({"PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1", "IG_INCLUDE_COMMENTS": "false",
+            env.update({"PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1", "IG_INCLUDE_COMMENTS": "true",
                 "IG_OUTPUT_DIR": str(work_dir / "exports")})
             env.setdefault("IG_MEDIA_DOWNLOAD_WORKERS", "2")
             env.setdefault("OPENCODE_MAX_CONCURRENT_POST_ANALYSES", "4")
+            # Preserve the richer web analysis even when an existing deployment
+            # still has the earlier 1024-token / three-media Secrets values.
+            for key, minimum, maximum in (("OPENCODE_POST_MAX_OUTPUT_TOKENS", 2048, 4096),
+                                          ("OPENCODE_MAX_MEDIA_PER_POST", 6, 20)):
+                try:
+                    env[key] = str(min(maximum, max(minimum, int(env.get(key, str(minimum))))))
+                except ValueError:
+                    env[key] = str(minimum)
             scrape_started = time.monotonic()
             resumed = job.export_dir is not None
             if job.export_dir is None:
