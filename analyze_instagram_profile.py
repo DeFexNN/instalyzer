@@ -24,7 +24,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from analysis_prompts import (
     MAX_POSTS, PROMPT_VERSION, build_post_prompt, build_synthesis_prompt,
-    comment_coverage, prepare_comments, DEFAULT_MAX_COMMENTS, DEFAULT_COMMENT_CHAR_BUDGET,
+    comment_coverage, prepare_comments, synthesis_comment_evidence, DEFAULT_MAX_COMMENTS, DEFAULT_COMMENT_CHAR_BUDGET,
 )
 
 from media_processing import (
@@ -147,6 +147,7 @@ def checkpoint_fingerprint(
         source_posts.append({
             "id": str(post.get("id") or post.get("shortcode") or ""),
             "caption": str(post.get("caption") or ""),
+            "taken_at": post.get("taken_at"),
             "comments": post.get("comments", []),
             "comments_status": post.get("comments_status", "not_collected"),
             "media": files,
@@ -535,6 +536,7 @@ def analyze_post(api_key: str, model: str, session_id: str, export_dir: Path,
         "shortcode": shortcode,
         "permalink": permalink,
         "caption": caption,
+        "taken_at": post.get("taken_at"),
         "media_analyzed": sent_media,
         "media_payload_bytes": media_payload_bytes,
         "media_skipped": skipped_media,
@@ -545,6 +547,7 @@ def analyze_post(api_key: str, model: str, session_id: str, export_dir: Path,
         "comments_analyzed": comments["analyzed"],
         "comments_sampled_out": comments["sampled_out"],
         "comments_texts_truncated": comments["texts_truncated"],
+        "comment_evidence": synthesis_comment_evidence(comments),
         "owner_comment_evidence": [
             {"text": c["text"][:1000], "reply_to_text": (c.get("reply_to_text") or "")[:500]}
             for c in comments["comments"] if c["author_role"] == "profile_owner"
@@ -664,11 +667,9 @@ def main() -> int:
                 "model_usage": model_usage,
                 "comment_coverage": comment_coverage(results),
                 "analysis_settings": {
-                    "post_reasoning_effort": post_reasoning_effort,
+                    **(previous.get("analysis_settings") or {}),
                     "synthesis_reasoning_effort": synthesis_reasoning_effort,
-                    "max_media_per_post": max_media_per_post,
-                    "post_max_output_tokens": post_max_output_tokens,
-                    "image_max_edge": IMAGE_MAX_EDGE,
+                    "synthesis_prompt_version": ANALYSIS_PIPELINE_VERSION,
                 },
                 "analysis_duration_seconds": synthesis_duration,
                 "synthesis_duration_seconds": summary_usage.get("duration_seconds", synthesis_duration),
@@ -794,6 +795,8 @@ def main() -> int:
             "checkpoint_resumed_posts": len(jobs) - len(pending_jobs),
             "max_posts": MAX_POSTS,
             "prompt_version": ANALYSIS_PIPELINE_VERSION,
+            "post_prompt_version": ANALYSIS_PIPELINE_VERSION,
+            "synthesis_prompt_version": ANALYSIS_PIPELINE_VERSION,
             "max_comments_per_post": setting_int("OPENCODE_MAX_COMMENTS_PER_POST", DEFAULT_MAX_COMMENTS, 1, 500),
             "comment_char_budget": setting_int("OPENCODE_COMMENT_CHAR_BUDGET", DEFAULT_COMMENT_CHAR_BUDGET, 1000, 50000),
         },
