@@ -45,6 +45,13 @@ class ScrapeDoProbeTests(unittest.TestCase):
         self.assertTrue(result["login_form_present"])
         self.assertFalse(result["profile_found"])
 
+    def test_missing_cursor_does_not_mean_the_source_is_exhausted(self):
+        fixture = self.fixture()
+        fixture["data"]["xig_user_by_igid_v2"]["polaris_timeline_connection"]["page_info"]["end_cursor"] = None
+        result = inspect_body(json.dumps(fixture), "example")
+        self.assertTrue(result["has_next_page"])
+        self.assertIsNone(result["next_cursor"])
+
     def test_request_sends_only_provider_key_and_redacts_it_in_response(self):
         secret = "fictional+key with spaces"
         response = Mock()

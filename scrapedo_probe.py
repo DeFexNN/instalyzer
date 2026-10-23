@@ -87,9 +87,10 @@ def inspect_body(body: str, username: str) -> dict:
         pass
     nodes = {}
     cursor = None
+    has_next_page = False
     profile_found = False
     def walk(value, depth=0):
-        nonlocal cursor, profile_found
+        nonlocal cursor, profile_found, has_next_page
         if depth > 60:
             return
         if isinstance(value, list):
@@ -111,6 +112,7 @@ def inspect_body(body: str, username: str) -> dict:
                             nodes[identity] = {**node, "shortcode": code}
                     info = connection.get("page_info") or {}
                     if info.get("has_next_page"):
+                        has_next_page = True
                         cursor = info.get("end_cursor")
             for child in value.values():
                 if isinstance(child, (list, dict)):
@@ -119,7 +121,7 @@ def inspect_body(body: str, username: str) -> dict:
         walk(document)
     return {"title": parser.title[:200], "metadata": parser.metadata,
         "json_documents": len(documents), "profile_found": profile_found,
-        "post_count": len(nodes), "post_nodes": list(nodes.values()), "has_next_page": bool(cursor),
+        "post_count": len(nodes), "post_nodes": list(nodes.values()), "has_next_page": has_next_page,
         "next_cursor": cursor, "login_form_present": 'name="username"' in body and 'name="password"' in body}
 
 
@@ -128,10 +130,29 @@ def fetch_profile(username: str, token: str, *, render: bool = False,
     username = profile_username_from_input(username)
     target = ("https://www.instagram.com/api/v1/users/web_profile_info/?" + urlencode({"username": username})
               if profile_json else f"https://www.instagram.com/{username}/")
+    return fetch_url(target, token, render=render)
+
+
+def fetch_url(target: str, token: str, *, render: bool = False, options: dict | None = None,
+              form: dict | None = None, target_headers: dict | None = None) -> tuple[dict, str]:
+    parsed = urlparse(target)
+    if parsed.scheme != "https" or parsed.hostname not in {"www.instagram.com", "instagram.com"} or parsed.username or parsed.password:
+        raise ValueError("Only public HTTPS Instagram targets are supported.")
     parameters = {"token": token, "url": target, "disableRetry": "true", "timeout": "45000"}
     if render:
         parameters.update({"render": "true", "customWait": "3000"})
-    request = Request("https://api.scrape.do/?" + urlencode(parameters), headers={"Accept": "*/*"})
+    parameters.update(options or {})
+    protected = {"setcookies", "customheaders", "forwardheaders", "cookie", "cookies"}
+    if any(str(k).casefold() in protected for k in parameters) or any(str(k).casefold() in {"url", "token"} for k in (options or {})):
+        raise ValueError("Probe options cannot forward account cookies or replace authentication/target.")
+    headers = {"Accept": "*/*"}
+    if target_headers:
+        if any(k.casefold() not in {"x-ig-app-id", "x-fb-lsd", "referer", "content-type"} for k in target_headers):
+            raise ValueError("Only public app/referer headers are supported.")
+        parameters["extraHeaders"] = "true"
+        headers.update({"Sd-" + k: v for k, v in target_headers.items()})
+    data = urlencode(form).encode() if form is not None else None
+    request = Request("https://api.scrape.do/?" + urlencode(parameters), data=data, headers=headers)
     started = time.monotonic()
     try:
         response = build_opener(NoRedirects()).open(request, timeout=75)

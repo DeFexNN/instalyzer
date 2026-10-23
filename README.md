@@ -90,6 +90,20 @@ This makes one public-page request through Scrape.do, extracts embedded timeline
 
 This probe is separate from the Streamlit job pipeline. It verifies the first available batch; 100-post pagination, comment collection, complete video streams, and source timestamps are not established by a successful profile-page fetch. The manifest marks missing comments and unknown dates explicitly. `--render` and `--profile-json` are additional experimental request variants; provider-side rendering can consume more credits. Read the actual cost from the response headers rather than assuming a price: https://scrape.do/documentation/request-costs/ .
 
+### Cached collection experiment (up to 100 posts)
+
+```powershell
+python .\scrape_instagram_scrapedo.py bohdankryuk --limit 100 --max-credits 10
+```
+
+This separate CLI caches public responses and downloaded files, requests a bulk timeline instead of fetching each post, and stops when pagination returns no new IDs, repeats a cursor, or fails. A repeated run reuses cached errors as well as successes, so it does not silently retry paid failures. The credit cap applies to the entire profile experiment directory, including earlier runs; unknown request costs reserve the expected cost instead of counting as free. Expensive rendering/residential routes are not enabled automatically.
+
+Output is saved under ignored `.runtime/scrapedo-100/<username>/`. `posts.json` contains explicit coverage: requested/advertised/collected counts, dates present, verified comment threads, video previews and download errors. Exit code `1` means incomplete discovery; `0` confirms reaching the post limit or exhausting the available source, not completeness of every field. CDN media downloads do not use Scrape.do credits. Already-paid post pages in this cache can add dates and embedded comments without new requests. This does not establish that Instagram exposes comments or full video streams anonymously.
+
+To reuse an earlier probe, add `--seed-response '.runtime\scrapedo-probes\<probe-folder>\response.txt'`. Keep its adjacent `result.json`. No account cookies are sent.
+
+Live result on 2026-10-24: the tested profile advertised 65 posts, but this public route exposed 12. Cursor navigation repeated the first batch; bulk queries returned no timeline, including a 12-item control. Eleven exploratory provider requests consumed **5 credits** in total, confirmed against the final subscription balance (993). The export contains 19 verified image files (741,003 bytes), including six video covers. One post has a verified timestamp and a verified zero-comment count; no comment text or full video streams were obtained. A full 100-post scrape through this route remains unavailable. Replaying the saved collection made zero new provider requests.
+
 ## AI analysis of an export
 
 Set `OPENCODE_API_KEY` in the local `.env` to a **freshly rotated** OpenCode Go key. The analyzer uses `muse-spark-1.3-contributor` through OpenCode Go's Responses API. It analyzes at most 100 posts, sending each post's caption, photos, available comments, and one extracted frame per video to OpenCode/Meta. It writes `profile_analysis.md` with only consolidated conclusions (profile portrait, professional content, possible hobbies, explicitly described family context, comment evidence, other details, limits, and summary), while `profile_analysis.json` retains the individual post analyses. The summary can include more detail when the evidence supports it, but does not enumerate posts or show their IDs.
