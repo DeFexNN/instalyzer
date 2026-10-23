@@ -30,13 +30,14 @@ from analysis_prompts import MAX_POSTS, DEFAULT_MAX_COMMENTS, comments_need_coll
 ROOT = Path(__file__).resolve().parent
 RUNTIME = ROOT / ".runtime"
 REQUIRED = ("IG_USERNAME", "IG_SESSIONID", "IG_CSRFTOKEN", "IG_DS_USER_ID", "OPENCODE_API_KEY")
-CONFIG_KEYS = (*REQUIRED, "APP_PASSWORD", "APP_ENABLE_LIVE", "APP_MAX_RUNS_PER_DAY",
+CONFIG_KEYS = (*REQUIRED, "APP_PASSWORD", "APP_ENABLE_LIVE", "APP_MAX_RUNS_PER_DAY", "APP_LOW_CPU_MODE",
     "IG_MID", "IG_IG_DID", "IG_RUR", "IG_DATR", "IG_DPR", "IG_IG_NRCB",
     "IG_PS_L", "IG_PS_N", "IG_RD_CHALLENGE", "IG_WD", "OPENCODE_MODEL",
     "OPENCODE_IMAGE_MAX_EDGE", "OPENCODE_MAX_MEDIA_PER_POST", "OPENCODE_POST_MAX_OUTPUT_TOKENS",
     "OPENCODE_MAX_CONCURRENT_POST_ANALYSES", "OPENCODE_POST_REASONING_EFFORT",
     "OPENCODE_SYNTHESIS_REASONING_EFFORT", "IG_MEDIA_DOWNLOAD_WORKERS", "PLAYWRIGHT_CHROMIUM_EXECUTABLE",
-    "IG_MAX_COMMENTS_PER_POST", "OPENCODE_MAX_COMMENTS_PER_POST", "OPENCODE_COMMENT_CHAR_BUDGET")
+    "IG_MAX_COMMENTS_PER_POST", "OPENCODE_MAX_COMMENTS_PER_POST", "OPENCODE_COMMENT_CHAR_BUDGET",
+    "IG_COMPRESS_VIDEOS", "FFMPEG_THREADS", "OPENCODE_MEDIA_PREPARATION_WORKERS")
 TERMINAL = {"complete", "failed", "cancelled"}
 JOB_TIMEOUT_SECONDS = 1800
 # Initial bounds are deliberately broad; these are not measured cloud timings.
@@ -71,6 +72,18 @@ def live_configuration(config: Mapping[str, str]) -> tuple[bool, list[str]]:
         missing.append("APP_PASSWORD (мінімум 12 символів)")
     enabled = str(config.get("APP_ENABLE_LIVE", "true")).lower() in {"true", "1", "yes"}
     return enabled and not missing, missing
+
+
+def apply_resource_limits(env: dict[str, str], config: Mapping[str, str]) -> bool:
+    low_cpu = str(config.get("APP_LOW_CPU_MODE", "true")).strip().casefold() in {"1", "true", "yes", "on"}
+    if low_cpu:
+        env.update({"IG_COMPRESS_VIDEOS": "false",
+                    "FFMPEG_THREADS": "1", "OPENCODE_MEDIA_PREPARATION_WORKERS": "1"})
+        try:
+            env["IG_MEDIA_DOWNLOAD_WORKERS"] = str(max(1, min(2, int(env.get("IG_MEDIA_DOWNLOAD_WORKERS", "2")))))
+        except ValueError:
+            env["IG_MEDIA_DOWNLOAD_WORKERS"] = "2"
+    return low_cpu
 
 
 def password_signature(config: Mapping[str, str]) -> str:
@@ -161,10 +174,10 @@ class JobManager:
 
     def _reserve_budget(self, config: Mapping[str, str]) -> None:
         self.runtime.mkdir(parents=True, exist_ok=True)
-        path = self.runtime / "budget.json"
+        budget_path = self.runtime / "budget.json"
         today = datetime.now(timezone.utc).date().isoformat()
         try:
-            saved = json.loads(path.read_text(encoding="utf-8"))
+            saved = json.loads(budget_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             saved = {}
         used = int(saved.get("runs", 0)) if saved.get("day") == today else 0
@@ -175,18 +188,18 @@ class JobManager:
         if used >= limit:
             raise ValueError("На сьогодні демо досягло ліміту запусків. Готові звіти залишаються доступними.")
         total_bytes = 0
-        for path in self.runtime.rglob("*"):
+        for entry in self.runtime.rglob("*"):
             try:
-                if path.is_file():
-                    total_bytes += path.stat().st_size
+                if entry.is_file():
+                    total_bytes += entry.stat().st_size
             except OSError:
                 # A running encoder can atomically replace a file during the scan.
                 continue
         if total_bytes > 1024 * 1024 * 1024:
             raise ValueError("Сховище демо заповнене. Збережи результати й перезапусти застосунок.")
-        temporary = path.with_suffix(".tmp")
+        temporary = budget_path.with_suffix(".tmp")
         temporary.write_text(json.dumps({"day": today, "runs": used + 1}), encoding="utf-8")
-        temporary.replace(path)
+        temporary.replace(budget_path)
 
     def submit(self, owner: str, profile: str, config: Mapping[str, str], *, authorized: bool) -> str:
         if not authorized or not live_configuration(config)[0]:
@@ -411,6 +424,7 @@ class JobManager:
             env.setdefault("IG_MEDIA_DOWNLOAD_WORKERS", "2")
             env.setdefault("IG_MAX_COMMENTS_PER_POST", str(DEFAULT_MAX_COMMENTS))
             env.setdefault("OPENCODE_MAX_CONCURRENT_POST_ANALYSES", "4")
+            low_cpu_mode = apply_resource_limits(env, config)
             # Preserve the richer web analysis even when an existing deployment
             # still has the earlier 1024-token / three-media Secrets values.
             for key, minimum, maximum in (("OPENCODE_POST_MAX_OUTPUT_TOKENS", 2048, 4096),
@@ -453,6 +467,7 @@ class JobManager:
                 "scrape_duration_seconds": round(scrape_seconds, 3),
                 "analysis_includes_media_preparation": True,
                 "resumed": resumed,
+                "low_cpu_mode": low_cpu_mode,
             }
             temporary = report_path.with_suffix(".tmp")
             temporary.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

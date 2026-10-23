@@ -691,7 +691,8 @@ def download_media(url: str, destination: Path) -> tuple[str, int, int, dict[str
 
                 destination = destination.with_suffix(original_extension)
                 temporary.replace(destination)
-                if not is_image and original_extension in {".mp4", ".mov", ".m4v"}:
+                compress_video = os.getenv("IG_COMPRESS_VIDEOS", "true").strip().casefold() in {"1", "true", "yes", "on"}
+                if not is_image and original_extension in {".mp4", ".mov", ".m4v"} and compress_video:
                     with VIDEO_TRANSCODE_SEMAPHORE:
                         compacted = compact_video_file(destination)
                     final_size = destination.stat().st_size

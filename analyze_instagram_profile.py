@@ -18,6 +18,7 @@ import subprocess
 import sys
 import time
 import uuid
+from threading import Semaphore
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -33,6 +34,7 @@ from media_processing import (
     VIDEO_CRF,
     VIDEO_MAX_EDGE,
     encode_image_jpeg,
+    ffmpeg_thread_count,
 )
 
 
@@ -47,6 +49,7 @@ SYNTHESIS_OUTPUT_TOKENS = 6500
 DEFAULT_CONCURRENT_POST_ANALYSES = 6
 MAX_CONCURRENT_POST_ANALYSES = 8
 MAX_MEDIA_PER_POST = 6
+MEDIA_PREPARATION_SEMAPHORE = Semaphore(2)
 ANALYSIS_PIPELINE_VERSION = PROMPT_VERSION
 DEFAULT_POST_REASONING_EFFORT = "minimal"
 DEFAULT_SYNTHESIS_REASONING_EFFORT = "low"
@@ -225,7 +228,8 @@ def ffmpeg_encode(path: Path, *, video: bool) -> bytes | None:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         return None
-    command = [ffmpeg, "-hide_banner", "-loglevel", "error"]
+    command = [ffmpeg, "-hide_banner", "-loglevel", "error",
+               "-threads", str(ffmpeg_thread_count()), "-filter_threads", "1"]
     if video:
         command += ["-ss", "0"]
     command += [
@@ -236,6 +240,7 @@ def ffmpeg_encode(path: Path, *, video: bool) -> bytes | None:
         "-q:v", "6",
         "-f", "image2pipe",
         "-vcodec", "mjpeg",
+        "-threads", str(ffmpeg_thread_count()),
         "pipe:1",
     ]
     try:
@@ -509,7 +514,8 @@ def analyze_post(api_key: str, model: str, session_id: str, export_dir: Path,
             skipped_media += 1
             continue
         path = resolve_media_path(export_dir, str(media["file"]))
-        encoded = image_data(path, str(media.get("media_type") or ""))
+        with MEDIA_PREPARATION_SEMAPHORE:
+            encoded = image_data(path, str(media.get("media_type") or ""))
         if not encoded:
             skipped_media += 1
             continue
@@ -606,7 +612,7 @@ def main() -> int:
     args = parser.parse_args()
 
     load_dotenv(ROOT / ".env")
-    global IMAGE_MAX_EDGE
+    global IMAGE_MAX_EDGE, MEDIA_PREPARATION_SEMAPHORE
     IMAGE_MAX_EDGE = setting_int(
         "OPENCODE_IMAGE_MAX_EDGE", DEFAULT_IMAGE_MAX_EDGE, 256, MAX_ANALYSIS_IMAGE_MAX_EDGE
     )
@@ -614,6 +620,8 @@ def main() -> int:
         "OPENCODE_MAX_CONCURRENT_POST_ANALYSES", DEFAULT_CONCURRENT_POST_ANALYSES, 1,
         MAX_CONCURRENT_POST_ANALYSES,
     )
+    media_preparation_workers = setting_int("OPENCODE_MEDIA_PREPARATION_WORKERS", 2, 1, 4)
+    MEDIA_PREPARATION_SEMAPHORE = Semaphore(media_preparation_workers)
     max_media_per_post = setting_int("OPENCODE_MAX_MEDIA_PER_POST", MAX_MEDIA_PER_POST, 1, 20)
     post_max_output_tokens = setting_int("OPENCODE_POST_MAX_OUTPUT_TOKENS", MAX_OUTPUT_TOKENS, 256, 4096)
     post_reasoning_effort = setting_effort(
@@ -792,6 +800,7 @@ def main() -> int:
             "post_max_output_tokens": post_max_output_tokens,
             "image_max_edge": IMAGE_MAX_EDGE,
             "max_concurrent_post_analyses": max_workers,
+            "media_preparation_workers": media_preparation_workers,
             "checkpoint_resumed_posts": len(jobs) - len(pending_jobs),
             "max_posts": MAX_POSTS,
             "prompt_version": ANALYSIS_PIPELINE_VERSION,

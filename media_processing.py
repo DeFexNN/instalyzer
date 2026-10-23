@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
+import os
 import shutil
 import subprocess
 
@@ -14,6 +15,13 @@ IMAGE_MAX_EDGE = 1280
 IMAGE_JPEG_QUALITY = 80
 VIDEO_MAX_EDGE = 720
 VIDEO_CRF = 28
+
+
+def ffmpeg_thread_count() -> int:
+    try:
+        return max(1, min(4, int(os.getenv("FFMPEG_THREADS", "2"))))
+    except ValueError:
+        return 2
 
 
 def encode_image_jpeg(
@@ -64,13 +72,14 @@ def compact_video_file(
     temporary = path.with_name(f"{path.stem}.compact{path.suffix}")
     command = [
         ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+        "-threads", str(ffmpeg_thread_count()), "-filter_threads", "1",
         "-i", str(path),
         "-map", "0:v:0", "-map", "0:a?", "-map_metadata", "0",
         "-vf", (
             f"scale=w='min({max_edge},iw)':h='min({max_edge},ih)':"
             "force_original_aspect_ratio=decrease:force_divisible_by=2"
         ),
-        "-c:v", "libx264", "-preset", "fast", "-crf", str(crf),
+        "-c:v", "libx264", "-threads", str(ffmpeg_thread_count()), "-preset", "fast", "-crf", str(crf),
         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k",
         "-movflags", "+faststart", str(temporary),
     ]

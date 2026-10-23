@@ -42,6 +42,8 @@ This local exporter uses headless Playwright to load the profile and collect its
 
 Downloaded photos are normalized to JPEG quality 80 and at most 1280 px on the long edge when that makes the file smaller. Video variants are selected at up to 720 px, then optionally transcoded with FFmpeg to H.264 CRF 28; the transcoded file replaces the download only when it is smaller. Install FFmpeg and make sure it is on `PATH` to enable video compression. If FFmpeg is unavailable, the selected source video is kept.
 
+The web app defaults to `APP_LOW_CPU_MODE=true`: it disables full video transcoding, limits FFmpeg to one thread and media preparation to one file at a time, and caps download workers at two. The selected source videos are kept, so disk use can increase; the analyzer still extracts one frame per selected video. API requests remain independently concurrent. CLI video compression is enabled by default and can be disabled with `IG_COMPRESS_VIDEOS=false`; `FFMPEG_THREADS` (1–4) and `OPENCODE_MEDIA_PREPARATION_WORKERS` (1–4) control its CPU parallelism.
+
 Media for different posts downloads concurrently (4 workers by default), while output order remains the same as the profile. Set `IG_MEDIA_DOWNLOAD_WORKERS` to 1–6 to tune concurrency; video transcoding is capped at two simultaneous FFmpeg jobs to limit CPU and memory pressure. A transient timeout, rate limit, or server error gets one retry. Set the worker count to `1` to disable parallel downloading.
 
 ## Run
