@@ -78,6 +78,18 @@ python .\compact_instagram_export.py '.\exports\instagram-example_profile-YYYYMM
 
 The command updates `posts.json` after each successful file and skips files already marked as optimized.
 
+## Experimental Scrape.do probe
+
+Add `SCRAPER_API_KEY` to the local `.env`, then run:
+
+```powershell
+python .\scrapedo_probe.py 'https://www.instagram.com/bohdankryuk/' --download-sample 3
+```
+
+This makes one public-page request through Scrape.do, extracts embedded timeline records, and optionally downloads one preview media item for up to three posts. It uses no authenticated Instagram session and does not forward Instagram cookies. The provider token is read locally, redirects from the provider are refused, and diagnostics omit the token-bearing API URL. Raw content, provider credit headers, parsed nodes, preview files, and a `posts.json` manifest are saved under ignored `.runtime/scrapedo-probes/`.
+
+This probe is separate from the Streamlit job pipeline. It verifies the first available batch; 100-post pagination, comment collection, complete video streams, and source timestamps are not established by a successful profile-page fetch. The manifest marks missing comments and unknown dates explicitly. `--render` and `--profile-json` are additional experimental request variants; provider-side rendering can consume more credits. Read the actual cost from the response headers rather than assuming a price: https://scrape.do/documentation/request-costs/ .
+
 ## AI analysis of an export
 
 Set `OPENCODE_API_KEY` in the local `.env` to a **freshly rotated** OpenCode Go key. The analyzer uses `muse-spark-1.3-contributor` through OpenCode Go's Responses API. It analyzes at most 100 posts, sending each post's caption, photos, available comments, and one extracted frame per video to OpenCode/Meta. It writes `profile_analysis.md` with only consolidated conclusions (profile portrait, professional content, possible hobbies, explicitly described family context, comment evidence, other details, limits, and summary), while `profile_analysis.json` retains the individual post analyses. The summary can include more detail when the evidence supports it, but does not enumerate posts or show their IDs.
