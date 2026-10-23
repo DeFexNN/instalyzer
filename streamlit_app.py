@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 from web_backend import (
-    ROOT, JobManager, format_duration, live_configuration, normalize_profile,
+    ROOT, JobManager, format_duration, format_wait_range, live_configuration, normalize_profile,
     password_signature, read_config, result_cost,
 )
 
@@ -143,7 +143,7 @@ def show_running(config: dict) -> None:
         with st.container(border=True):
             title, clock = st.columns([4, 1])
             title.markdown(f"**Аналіз @{job['username']}**")
-            clock.caption(format_duration(job["elapsed"]))
+            clock.caption(format_duration(job["queue_elapsed"] if job["state"] == "queued" else job["elapsed"]))
             if job["state"] in {"failed", "cancelled"}:
                 st.error(job["error"]) if job["state"] == "failed" else st.info(job["error"])
                 if job["can_resume"] and authorized(config) and st.button("Продовжити збережений аналіз", key="resume_job"):
@@ -162,8 +162,24 @@ def show_running(config: dict) -> None:
             current = stages.index(job["stage"]) if job["stage"] in stages else -1
             parts = [f'<span class="run-step {"done" if i < current else "active" if i == current else ""}">{"✓ " if i < current else ""}{label}</span>' for i, label in enumerate(labels)]
             st.html('<div class="run-steps">' + "".join(parts) + '</div>')
-            messages = {"queued": "Очікуємо в черзі. Запуски виконуються по одному.", "scraping": "Читаємо доступні дописи профілю…", "comments": f"Перевірено коментарі у {job['done']} із {job['total']} дописів.", "media": f"Підготовлено {job['done']} із {job['total']} дописів.", "analysis": f"Проаналізовано {job['done']} із {job['total']} дописів.", "synthesis": "Усі матеріали оброблено. Формуємо спільний висновок…"}
-            st.caption(messages.get(job["stage"], "Працюємо…"))
+            messages = {"scraping": "Читаємо доступні дописи профілю…", "comments": f"Перевірено коментарі у {job['done']} із {job['total']} дописів.", "media": f"Підготовлено {job['done']} із {job['total']} дописів.", "analysis": f"Проаналізовано {job['done']} із {job['total']} дописів.", "synthesis": "Усі матеріали оброблено. Формуємо спільний висновок…"}
+            if job["state"] == "queued":
+                position, wait = st.columns(2)
+                position.metric("Ваше місце в черзі", f"{job['queue_position']} з {job['queue_total']}",
+                    help="Враховано поточний запуск, який уже виконується, і запуски, що очікують.")
+                wait.metric("Приблизно до старту", format_wait_range(job["wait_seconds_min"], job["wait_seconds_max"]),
+                    help="Очікування до початку вашого аналізу. Час самого аналізу сюди не входить.")
+                if job["jobs_ahead"]:
+                    st.caption(f"Запусків попереду: {job['jobs_ahead']}. Зараз виконується: {job['running_jobs']}. Запуски виконуються по одному.")
+                    basis = (f"Оцінка за {job['wait_estimate_samples']} завершеними запусками на цьому сервері."
+                             if job["wait_estimate_basis"] == "history" else "Початкова груба оцінка: завершених запусків для порівняння ще немає.")
+                    st.caption(basis + " Позиція й час оновлюються щосекунди; тривалість залежить від медіа, коментарів і відповіді сервісів.")
+                    if job["wait_estimate_overdue"]:
+                        st.caption("Поточний запуск триває довше за орієнтир. Оцінка очікування може збільшитися.")
+                else:
+                    st.caption("Ви перші в черзі. Готуємо запуск…")
+            else:
+                st.caption(messages.get(job["stage"], "Працюємо…"))
             if job["stage"] in {"comments", "media", "analysis"}:
                 st.progress(min(1.0, job["done"] / max(1, job["total"])))
             if st.button("Зупинити", type="tertiary", icon=":material/stop_circle:", key="cancel_job"):

@@ -8,10 +8,12 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import os
 import queue
 import re
 import signal
+import statistics
 import subprocess
 import sys
 import threading
@@ -36,6 +38,9 @@ CONFIG_KEYS = (*REQUIRED, "APP_PASSWORD", "APP_ENABLE_LIVE", "APP_MAX_RUNS_PER_D
     "OPENCODE_SYNTHESIS_REASONING_EFFORT", "IG_MEDIA_DOWNLOAD_WORKERS", "PLAYWRIGHT_CHROMIUM_EXECUTABLE",
     "IG_MAX_COMMENTS_PER_POST", "OPENCODE_MAX_COMMENTS_PER_POST", "OPENCODE_COMMENT_CHAR_BUDGET")
 TERMINAL = {"complete", "failed", "cancelled"}
+JOB_TIMEOUT_SECONDS = 1800
+# Initial bounds are deliberately broad; these are not measured cloud timings.
+INITIAL_DURATION_RANGE = (300, 900)
 
 
 def read_config(secrets: Mapping | None = None) -> dict[str, str]:
@@ -92,6 +97,15 @@ def format_duration(seconds: float | None) -> str:
     return f"{seconds} с" if seconds < 60 else f"{seconds // 60} хв {seconds % 60:02d} с"
 
 
+def format_wait_range(lower: float, upper: float) -> str:
+    """Use rounded ranges rather than suggesting second-level ETA accuracy."""
+    if upper < 60:
+        return f"до {max(5, math.ceil(upper / 5) * 5)} с"
+    minimum = max(0, math.floor(lower / 60))
+    maximum = max(minimum + 1, math.ceil(upper / 60))
+    return f"{minimum}–{maximum} хв" if minimum else f"до {maximum} хв"
+
+
 def result_cost(payload: dict) -> float | None:
     # model_usage already includes summary_usage in current analyzer reports.
     usage = payload.get("model_usage") or {}
@@ -109,10 +123,12 @@ class Job:
     done: int = 0
     total: int = MAX_POSTS
     created: float = field(default_factory=time.time)
+    queued_at: float | None = None
     started: float | None = None
     finished: float | None = None
     export_dir: Path | None = None
     error: str = ""
+    resumed: bool = False
     logs: deque = field(default_factory=lambda: deque(maxlen=160), repr=False)
     cancel: threading.Event = field(default_factory=threading.Event, repr=False)
 
@@ -190,11 +206,61 @@ class JobManager:
     def snapshot(self, owner: str, job_id: str) -> dict:
         with self.lock:
             job = self._owned(owner, job_id)
-            end = job.finished or time.time()
+            now = time.time()
+            end = job.finished if job.finished is not None else now
             return {"id": job.id, "username": job.username, "state": job.state, "stage": job.stage,
                 "done": job.done, "total": job.total, "error": job.error,
-                "elapsed": end - job.started if job.started else 0, "created": job.created,
-                "can_resume": job.state == "failed" and job.export_dir is not None}
+                "elapsed": end - job.started if job.started is not None else 0, "created": job.created,
+                "queue_elapsed": max(0, now - (job.queued_at if job.queued_at is not None else job.created)) if job.state == "queued" else 0,
+                "can_resume": job.state == "failed" and job.export_dir is not None,
+                **self._queue_snapshot(job, now)}
+
+    def _duration_range(self, job: Job) -> tuple[float, float, int]:
+        samples = [j for j in self.jobs.values() if j.state == "complete" and not j.resumed
+                   and j.started is not None and j.finished is not None
+                   and 1 <= j.finished - j.started <= JOB_TIMEOUT_SECONDS and j.total > 0][-10:]
+        post_count = max(1, min(MAX_POSTS, job.total))
+        if not samples:
+            scale = post_count / MAX_POSTS
+            return max(60, INITIAL_DURATION_RANGE[0] * scale), max(180, INITIAL_DURATION_RANGE[1] * scale), 0
+        per_post = statistics.median((j.finished - j.started) / j.total for j in samples)
+        predicted = per_post * post_count
+        lower = min(JOB_TIMEOUT_SECONDS - 30, max(10, predicted * 0.7))
+        upper = min(JOB_TIMEOUT_SECONDS, max(lower + 30, predicted * 1.6))
+        return lower, upper, len(samples)
+
+    def _queue_snapshot(self, job: Job, now: float) -> dict:
+        # Expose counts and timing only; never another session's profile or job ID.
+        running = [j for j in self.jobs.values() if j.state == "running"]
+        pending = sorted((j for j in self.jobs.values() if j.state == "queued" and not j.cancel.is_set()),
+                         key=lambda j: j.queued_at if j.queued_at is not None else j.created)
+        ordered = running + pending
+        position = next((i for i, item in enumerate(ordered) if item.id == job.id), None)
+        result = {"queue_position": position + 1 if position is not None else None,
+            "queue_total": len(ordered), "jobs_ahead": position or 0, "running_jobs": len(running),
+            "wait_seconds_min": None, "wait_seconds_max": None,
+            "wait_estimate_basis": None, "wait_estimate_samples": 0, "wait_estimate_overdue": False}
+        if job.state != "queued" or position is None:
+            return result
+        lower, upper = 0.0, 0.0
+        sample_count = 0
+        for ahead in ordered[:position]:
+            low, high, samples = self._duration_range(ahead)
+            sample_count = max(sample_count, samples)
+            if ahead.cancel.is_set():
+                low, high = 0, 15
+            elif ahead.state == "running" and ahead.started is not None:
+                elapsed = max(0, now - ahead.started)
+                result["wait_estimate_overdue"] |= elapsed >= high
+                # An overrun must not turn into a spurious zero-second promise.
+                low = max(0, low - elapsed)
+                high = min(max(10, high - elapsed, high * 0.25), max(10, JOB_TIMEOUT_SECONDS - elapsed + 15))
+            lower += low
+            upper += high
+        result.update({"wait_seconds_min": round(lower), "wait_seconds_max": round(max(10, upper)),
+            "wait_estimate_basis": "history" if sample_count else "initial",
+            "wait_estimate_samples": sample_count})
+        return result
 
     def history(self, owner: str) -> list[dict]:
         with self.lock:
@@ -205,6 +271,9 @@ class JobManager:
             job = self._owned(owner, job_id)
             if job.state not in TERMINAL:
                 job.cancel.set()
+                if job.state == "queued":
+                    job.state, job.stage, job.error = "cancelled", "cancelled", "Аналіз зупинено."
+                    job.finished = time.time()
 
     def resume(self, owner: str, job_id: str, config: Mapping[str, str], *, authorized: bool) -> None:
         if not authorized or not live_configuration(config)[0]:
@@ -217,6 +286,8 @@ class JobManager:
                 raise ValueError("Дочекайся завершення активного аналізу.")
             self._reserve_budget(config)
             job.state, job.stage, job.error = "queued", "queued", ""
+            job.queued_at = time.time()
+            job.resumed = True
             job.started = job.finished = None
             job.cancel.clear()
             self.pool.submit(self._run, job, dict(config))
@@ -305,7 +376,7 @@ class JobManager:
                 if job.cancel.is_set():
                     self._terminate(process)
                     raise InterruptedError("Аналіз зупинено.")
-                if time.time() - (job.started or time.time()) > 1800:
+                if time.time() - (job.started or time.time()) > JOB_TIMEOUT_SECONDS:
                     self._terminate(process)
                     raise TimeoutError("Час очікування перевищено. Спробуй ще раз пізніше.")
                 try:
@@ -323,7 +394,11 @@ class JobManager:
                 raise RuntimeError("Не вдалося завершити збір матеріалів. Перевір доступність профілю та спробуй пізніше.")
 
     def _run(self, job: Job, config: dict[str, str]) -> None:
-        self._update(job, state="running", started=time.time(), stage="scraping")
+        with self.lock:
+            if job.state == "cancelled":
+                return
+            self._update(job, state="running", started=time.time(), stage="scraping",
+                         resumed=job.export_dir is not None)
         try:
             if job.cancel.is_set():
                 raise InterruptedError("Аналіз зупинено.")
