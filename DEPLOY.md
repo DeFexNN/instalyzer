@@ -15,7 +15,9 @@
 
 ## Live-запуски
 
-Потрібні `IG_USERNAME`, `IG_SESSIONID`, `IG_CSRFTOKEN`, `IG_DS_USER_ID`, `OPENCODE_API_KEY` і `APP_PASSWORD` (від 12 символів). Cookies відповідають Instagram-акаунту, через який відкривається цільовий профіль. Цільовий профіль може бути іншим.
+Для HikerAPI (рекомендований провайдер) потрібні `HIKERAPI_TOKEN`, `OPENCODE_API_KEY` і `APP_PASSWORD` (від 12 символів). Cookies Instagram не потрібні. `HIKERAPI_MAX_REQUESTS` обмежує платні запити (типово 40), `HIKERAPI_COMMENTS="true"` додає збір коментарів. З `INSTAGRAM_SCRAPER_PROVIDER="auto"` токен HikerAPI вибирається першим.
+
+Для сесійного режиму або Apify потрібні `IG_USERNAME`, `IG_SESSIONID`, `IG_CSRFTOKEN`, `IG_DS_USER_ID` (або `APIFY_API_TOKEN`), `OPENCODE_API_KEY` і `APP_PASSWORD`. Cookies відповідають Instagram-акаунту, через який відкривається цільовий профіль; цільовий профіль може бути іншим.
 
 Передай знайомим URL і код `APP_PASSWORD`. Публічний демонстраційний звіт відкривається без коду. Налаштування не виводять значення cookies та ключів у браузер. Під час реального запуску користувач підтверджує передачу матеріалів Contributor-моделі, яка може використовувати їх для навчання.
 

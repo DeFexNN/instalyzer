@@ -92,7 +92,7 @@ def show_access(config: dict) -> None:
 
 def show_home(config: dict) -> None:
     try:
-        public_profile = collection_provider(config) == "apify"
+        public_profile = collection_provider(config) in {"hiker", "apify"}
     except ValueError:
         public_profile = False
     left, right = st.columns([1.55, 1], gap="large")
@@ -247,6 +247,9 @@ def show_result() -> None:
         if source.get("provider") == "Apify":
             source_cost = source.get("cost_usd")
             st.caption(f"Збір даних Apify: ${source_cost:.5f}" if source_cost is not None else "Вартість збору Apify ще уточнюється.")
+        elif source.get("provider") == "HikerAPI":
+            st.caption(f"Збір даних HikerAPI: {source.get('requests', 0)} запитів, "
+                       f"кеш: {source.get('cached_responses', 0)}.")
         st.markdown("**Що враховано**")
         st.write("Фото, вибрані кадри відео й підписи. Аналіз описує видимі заняття та повторювані теми. Він не встановлює приховані особисті обставини.")
         settings_data = payload.get("analysis_settings") or {}
@@ -305,7 +308,7 @@ def show_about(config: dict) -> None:
     st.html('<div class="eyebrow">БІЛЬШЕ КОНТЕКСТУ, МЕНШЕ ЗДОГАДОК</div>')
     st.title("Що бачить Instalyzer")
     st.write("Застосунок поєднує фото, підписи й доступні коментарі. Окремо розглядає професійний контент, можливі хобі, особисті епізоди й прямо названі автором сімейні зв’язки.")
-    for title, body in (("Збираємо до 100 дописів", "Зберігаються доступні фото й відео, дати, підписи та коментарі. Повнота залежить від доступності профілю й обмежень джерела. Для публічних профілів можна використовувати Apify."),
+    for title, body in (("Збираємо до 100 дописів", "Зберігаються доступні фото й відео, дати, підписи та коментарі. Повнота залежить від доступності профілю й обмежень джерела. Для публічних профілів можна використовувати HikerAPI або Apify."),
         ("Порівнюємо матеріали", "Зображення готуються до аналізу. Для каруселі беруться до шести рівномірно вибраних елементів; для відео — один кадр. Така вибірка має обмеження."),
         ("Формуємо один звіт", "Окремі розділи про професійні теми, хобі, прямо описаний сімейний контекст, коментарі, інші деталі, межі висновків і підсумок. Окремі публікації у фінальному Markdown не перелічуються.")):
         with st.container(border=True):

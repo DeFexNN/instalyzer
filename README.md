@@ -106,7 +106,7 @@ Live result on 2026-10-24: the tested profile advertised 65 posts, but this publ
 
 ## Apify collection in CLI and Streamlit
 
-The official [`apify/instagram-scraper`](https://apify.com/apify/instagram-scraper) (`shu8hvrXbJbY3Eb9W`) is supported as a complete pipeline provider. Put `APIFY_API_TOKEN` in your local `.env`. With `INSTAGRAM_SCRAPER_PROVIDER=auto` (the default), a configured Apify token selects this provider. Set the provider explicitly to `apify` to require it, or `instagram` to select the session-based scraper. Apify requires no Instagram session cookies. The model key and web access password are still required for web analyses.
+The official [`apify/instagram-scraper`](https://apify.com/apify/instagram-scraper) (`shu8hvrXbJbY3Eb9W`) is supported as a complete pipeline provider. Put `APIFY_API_TOKEN` in your local `.env`. With `INSTAGRAM_SCRAPER_PROVIDER=auto` (the default), a configured HikerAPI token selects HikerAPI first, then an Apify token selects Apify, otherwise the session-based scraper is used. Set the provider explicitly to `hiker`, `apify` or `instagram`. Apify requires no Instagram session cookies. The model key and web access password are still required for web analyses.
 
 ```powershell
 python .\scrape_instagram_apify.py 'https://www.instagram.com/bohdankryuk/' --limit 100
@@ -130,6 +130,30 @@ APIFY_COMMENTS_MODE = "preview"
 The existing queue, media settings, analyzer and final Markdown format are reused. Web reports retain collection coverage and add the reported Apify run cost to the model cost once. An unknown collection cost is shown as unavailable.
 
 The [integration notes](APIFY_INTEGRATION.md) record the live result, costs, limitations and cache verification.
+
+## HikerAPI collection in CLI and Streamlit
+
+[HikerAPI](https://hikerapi.com/) (`api.instagrapi.com`) is the recommended provider when the full advertised timeline matters. It follows Instagram's cursor instead of repeating the first page. Put `HIKERAPI_TOKEN` in your local `.env`; no Instagram cookies are used.
+
+```powershell
+python .\scrape_instagram_hiker.py bohdankryuk --limit 65
+python .\scrape_instagram_hiker.py bohdankryuk --limit 65 --no-download
+python .\scrape_instagram_hiker.py bohdankryuk --comments --max-comments 50
+```
+
+The CLI writes the same `posts.json` and `media/` layout as the other providers to `exports/instagram-<username>-hiker-<timestamp>/`. Responses are cached under `.runtime/hiker/<username>/`, so a replay costs zero requests. `--max-requests` is a hard cap on paid requests; `--refresh` ignores the cache. Live result on 2026-10-24: **65 of 65 advertised posts in 6 pages / 7 requests**, including the 8 posts Apify missed; the cached replay made 0 requests. HikerAPI bills per successful response (about $0.60–1.00 per 1,000 requests), so cache and request caps matter.
+
+For Streamlit Cloud, add these fields to Secrets:
+
+```toml
+INSTAGRAM_SCRAPER_PROVIDER = "hiker"
+HIKERAPI_TOKEN = "your-token"
+HIKERAPI_BASE_URL = "https://api.instagrapi.com"
+HIKERAPI_MAX_REQUESTS = "40"
+HIKERAPI_COMMENTS = "false"
+```
+
+`HIKERAPI_COMMENTS="true"` collects up to `IG_MAX_COMMENTS_PER_POST` comments per post and raises the effective request cap to at least `MAX_POSTS + 15`. It costs additional requests; the default is captions and preview data only.
 
 ## AI analysis of an export
 

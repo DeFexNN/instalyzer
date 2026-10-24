@@ -32,6 +32,7 @@ RUNTIME = ROOT / ".runtime"
 REQUIRED = ("IG_USERNAME", "IG_SESSIONID", "IG_CSRFTOKEN", "IG_DS_USER_ID", "OPENCODE_API_KEY")
 CONFIG_KEYS = (*REQUIRED, "APP_PASSWORD", "APP_ENABLE_LIVE", "APP_MAX_RUNS_PER_DAY", "APP_LOW_CPU_MODE",
     "INSTAGRAM_SCRAPER_PROVIDER", "APIFY_API_TOKEN", "APIFY_COMMENTS_MODE", "APIFY_MAX_TOTAL_CHARGE_USD",
+    "HIKERAPI_TOKEN", "HIKERAPI_BASE_URL", "HIKERAPI_MAX_REQUESTS", "HIKERAPI_COMMENTS",
     "IG_MID", "IG_IG_DID", "IG_RUR", "IG_DATR", "IG_DPR", "IG_IG_NRCB",
     "IG_PS_L", "IG_PS_N", "IG_RD_CHALLENGE", "IG_WD", "OPENCODE_MODEL",
     "OPENCODE_IMAGE_MAX_EDGE", "OPENCODE_MAX_MEDIA_PER_POST", "OPENCODE_POST_MAX_OUTPUT_TOKENS",
@@ -70,9 +71,11 @@ def read_config(secrets: Mapping | None = None) -> dict[str, str]:
 def collection_provider(config: Mapping[str, str]) -> str:
     selected = str(config.get("INSTAGRAM_SCRAPER_PROVIDER", "auto")).strip().casefold()
     if selected == "auto":
+        if str(config.get("HIKERAPI_TOKEN", "")).strip():
+            return "hiker"
         return "apify" if str(config.get("APIFY_API_TOKEN", "")).strip() else "instagram"
-    if selected not in {"apify", "instagram"}:
-        raise ValueError("INSTAGRAM_SCRAPER_PROVIDER: auto, apify or instagram")
+    if selected not in {"hiker", "apify", "instagram"}:
+        raise ValueError("INSTAGRAM_SCRAPER_PROVIDER: auto, hiker, apify or instagram")
     return selected
 
 
@@ -80,8 +83,11 @@ def live_configuration(config: Mapping[str, str]) -> tuple[bool, list[str]]:
     try:
         provider = collection_provider(config)
     except ValueError:
-        return False, ["INSTAGRAM_SCRAPER_PROVIDER (auto / apify / instagram)"]
-    required = ("APIFY_API_TOKEN", "OPENCODE_API_KEY") if provider == "apify" else REQUIRED
+        return False, ["INSTAGRAM_SCRAPER_PROVIDER (auto / hiker / apify / instagram)"]
+    required = {
+        "hiker": ("HIKERAPI_TOKEN", "OPENCODE_API_KEY"),
+        "apify": ("APIFY_API_TOKEN", "OPENCODE_API_KEY"),
+    }.get(provider, REQUIRED)
     missing = [key for key in required if not str(config.get(key, "")).strip()]
     if len(config.get("APP_PASSWORD", "")) < 12:
         missing.append("APP_PASSWORD (мінімум 12 символів)")
@@ -433,6 +439,8 @@ class JobManager:
                 messages = "\n".join(job.logs).lower()
                 if script == "scrape_instagram_apify.py":
                     raise RuntimeError("Apify не завершив збір. Перевір токен, баланс і доступність публічного профілю; збережений запуск можна продовжити.")
+                if script == "scrape_instagram_hiker.py":
+                    raise RuntimeError("HikerAPI не завершив збір. Перевір HIKERAPI_TOKEN, баланс і HIKERAPI_MAX_REQUESTS; повторний запуск використає кеш.")
                 if any(word in messages for word in ("cookie", "logged out", "session", "checkpoint_required", "challenge_required")):
                     raise RuntimeError("Instagram не прийняв сеанс. Власнику демо потрібно оновити cookies у Secrets.")
                 if "429" in messages:
@@ -473,23 +481,41 @@ class JobManager:
             collection_ran = job.export_dir is None
             provider = collection_provider(config)
             if job.export_dir is None:
-                script = "scrape_instagram_apify.py" if provider == "apify" else "scrape_instagram.py"
+                script = {"apify": "scrape_instagram_apify.py",
+                          "hiker": "scrape_instagram_hiker.py"}.get(provider, "scrape_instagram.py")
                 arguments = [f"https://www.instagram.com/{job.username}/"]
                 if provider == "apify":
                     arguments.extend(["--limit", str(MAX_POSTS), "--comments-mode", config.get("APIFY_COMMENTS_MODE", "preview")])
+                elif provider == "hiker":
+                    comments_enabled = str(config.get("HIKERAPI_COMMENTS", "false")).strip().casefold() in {
+                        "1", "true", "yes", "on"}
+                    arguments.extend(["--limit", str(MAX_POSTS)])
+                    if comments_enabled:
+                        arguments.extend(["--comments", "--max-comments",
+                                          env.get("IG_MAX_COMMENTS_PER_POST", str(DEFAULT_MAX_COMMENTS))])
+                    try:
+                        max_requests = max(1, int(config.get("HIKERAPI_MAX_REQUESTS", "40") or 40))
+                    except ValueError:
+                        max_requests = 40
+                    if comments_enabled:
+                        max_requests = max(max_requests, MAX_POSTS + 15)
+                    arguments.extend(["--max-requests", str(max_requests)])
                 self._process(job, script, arguments, env, config)
                 manifests = sorted((work_dir / "exports").glob("*/posts.json"))
                 if not manifests:
                     raise RuntimeError("Instagram не повернув матеріалів для цього профілю.")
                 job.export_dir = manifests[-1].parent
             payload = json.loads((job.export_dir / "posts.json").read_text(encoding="utf-8"))
-            source_provider = "apify" if str(payload.get("provider", "")).casefold() == "apify" else "instagram"
+            source_provider = {"hikerapi": "hiker", "apify": "apify"}.get(
+                str(payload.get("provider", "")).casefold(), "instagram")
             posts = payload.get("posts", [])[:MAX_POSTS]
             if not posts or not all(isinstance(p, dict) for p in posts):
                 raise RuntimeError("У профілі немає доступних публікацій.")
             # Resuming an export made before comment collection was enabled must
             # collect those comments before the model sees the old source data.
-            missing_comments = any(comments_need_collection(p) for p in posts)
+            # HikerAPI exports always carry an explicit comments_status, and its
+            # collector never falls back to Instagram session cookies.
+            missing_comments = source_provider != "hiker" and any(comments_need_collection(p) for p in posts)
             if missing_comments:
                 self._update(job, stage="comments", done=0, total=len(posts))
                 script = "scrape_instagram_apify.py" if source_provider == "apify" else "scrape_instagram.py"
